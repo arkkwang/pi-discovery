@@ -1,15 +1,17 @@
 import { registerDiscovery } from '../discovery.js';
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-// Resolve a dependency of the SDK package under test, regardless of whether the
-// installation hoists it next to the SDK or nests it inside (global vs checkout layouts).
+// Locate a dependency of the SDK package under test by walking node_modules
+// ancestors, like Node's own resolution but without exports conditions (these
+// SDK packages only expose `import`, so CJS require.resolve cannot see them).
+// Works whether the installation hoists siblings or nests them (global vs checkout).
 export function sdkDepDir(root, name) {
-  const req = createRequire(path.join(root, 'package.json'));
-  let dir = path.dirname(req.resolve(name));
-  while (!existsSync(path.join(dir, 'package.json'))) dir = path.dirname(dir);
-  return dir;
+  for (let dir = root; ; dir = path.dirname(dir)) {
+    const candidate = path.join(dir, 'node_modules', name);
+    if (existsSync(path.join(candidate, 'package.json'))) return candidate;
+    if (dir === path.dirname(dir)) throw new Error(`Cannot resolve ${name} from SDK root ${root}`);
+  }
 }
 export const nativeSchema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] };
 export function setup({ skills = [], tools = [], sections = {}, nativeExecute, mcpWait, sdk, settings = {}, register = registerDiscovery } = {}) {

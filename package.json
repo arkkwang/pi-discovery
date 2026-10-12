@@ -1,6 +1,6 @@
 {
   "name": "@arkkwang/pi-discovery",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Unified capability discovery and trajectory review for the Pi coding agent",
   "type": "module",
   "pi": {

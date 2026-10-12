@@ -18,7 +18,9 @@ test('executes source pi-snap via PATH; arguments are literal; no local semantic
   {type:'context_edit',targetId:'e2',replacement:null},
  ]);
  const text=await executionTrajectory(sm);
- for(const value of ['Task','Checking','git status','ERR','compact','context_edit']) assert.ok(text.includes(value),text);
+ // pi-snap ≥0.3.3 keeps context edits out of the default trajectory (host bookkeeping,
+ // visible via --trace/entry details); success result bodies are omitted there as well.
+ for(const value of ['Task','Checking','git status','ERR','compact']) assert.ok(text.includes(value),text);
  assert.doesNotMatch(text,/SECRET/);
  const query=await recommendationQuery('CURRENT',sm,[{data:'IMAGE_SECRET'}]);
  assert.match(query,/CURRENT/);assert.match(query,/\[image\]/);assert.doesNotMatch(query,/IMAGE_SECRET/);

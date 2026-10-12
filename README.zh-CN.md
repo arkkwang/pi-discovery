@@ -93,7 +93,7 @@ pi install .
 
 ## 执行轨迹与事件
 
-两条入口都异步调用同一个现有命令：`pi-snap <sessionManager.getSessionFile()> --tail 160`。轨迹语义只由 pi-snap 的**默认输出**维护：完整对话、工具关键参数/状态、原位置中断和 compaction/context_edit/branch_summary；省略 thinking、图片 payload 及全部工具结果正文（用户图片仍有占位）（包括错误与 host 准备结果）。本扩展不再解析历史消息生成另一套轨迹，读取去重仍独立使用 SDK 有效上下文投影。
+两条入口都异步调用同一个现有命令：`pi-snap <sessionManager.getSessionFile()> --tail 160`。轨迹语义只由 pi-snap 的**默认输出**维护（≥0.3.3）：完整对话、工具调用参数（截断）、失败或未知结果的一行状态、原位置中断，以及 compaction 与 branch_summary 摘要；上下文摘除（context_edit）是宿主处理痕迹，默认轨迹不含，仅在 `--trace` 与单条详情可见。thinking、图片 payload 及工具结果正文（含错误与 host 准备结果，用户图片仍有占位）同样省略。本扩展不解析历史消息生成另一套轨迹，读取去重仍独立使用 SDK 有效上下文投影。
 
 宿主通过固定 Bash 命令 `exec pi-snap "$@"` 传独立参数，兼容 Git Bash/macOS Bash，不拼接路径进 shell 脚本，不查安装目录、不新增本地 npm 依赖。单次 CLI 超时 5 秒，继承触发取消信号，stdout/stderr 缓冲各限 8 MiB；这部分包含在 60 秒总预算内。只对输出字符串保留近期 6000 字符并标明截断，不重新解释语义；开头当前请求独立保留首尾约 4000 字符。工具参数或早期记录被省略不证明它们不存在。
 

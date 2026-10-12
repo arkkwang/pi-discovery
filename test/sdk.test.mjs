@@ -4,6 +4,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { sdkDepDir } from './helpers.mjs';
 
 const sdkRoot = process.env.PI_DISCOVERY_SDK_ROOT;
 test('real Pi loader/runner renders short catalog with default and custom SYSTEM prompts', { skip: !sdkRoot }, async () => {
@@ -67,7 +68,7 @@ test('real MCP factory waits for pending discovery, preserves schema identity an
   const { createToolSearchExtension } = await sdk('extensions/tool-search/index.js');
   const { isToolSearchTool } = await sdk('extensions/tool-search/tool.js');
   const { registerDiscovery } = await import('../discovery.js');
-  const { createInMemoryTransportPair } = await import(pathToFileURL(path.resolve(sdkRoot, '../pi-mcp/dist/testing/index.js')).href);
+  const { createInMemoryTransportPair } = await import(pathToFileURL(path.join(sdkDepDir(sdkRoot, '@earendil-works/pi-mcp'), 'dist/testing/index.js')).href);
   const cwd = await mkdtemp(path.join(tmpdir(), 'unified-mcp-'));
   const { client, server } = createInMemoryTransportPair();
   await server.start();
@@ -134,7 +135,7 @@ test('resource loader replaces both built-ins once; settings and request additio
   const { SettingsManager } = await sdk('core/settings-manager.js');
   const { createMcpExtension } = await sdk('extensions/mcp/index.js');
   const { createToolSearchExtension } = await sdk('extensions/tool-search/index.js');
-  const ai = suffix => import(pathToFileURL(path.resolve(sdkRoot, '../pi-ai/dist', suffix)).href);
+  const ai = suffix => import(pathToFileURL(path.join(sdkDepDir(sdkRoot, '@earendil-works/pi-ai'), 'dist', suffix)).href);
   const { resolveTranscriptTools } = await ai('utils/transcript.js');
   const { convertResponsesMessages } = await ai('api/openai-responses-shared.js');
   const cwd = await mkdtemp(path.join(tmpdir(), 'unified-loader-'));

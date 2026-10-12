@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readPathKey } from '../trajectory.js';
-import { setup } from './helpers.mjs';
+import { setup, sdkDepDir } from './helpers.mjs';
 import { recommendationOptions, projectPrefetch, runPrefetch, validatePrediction, PREFETCH_TYPE } from '../prefetch.js';
 import { projectIndex, skillFileIndex } from '../context-index.js';
 const root = process.env.PI_DISCOVERY_SDK_ROOT;
@@ -59,10 +59,11 @@ test('file tree is bounded during traversal and respects nested ignores; Skill i
 
 test('real SDK: single prediction, checked read/bash, child persistence, metadata isolation and early exit', { skip: !root, timeout: 30000 }, async () => {
   const sdk = await import(pathToFileURL(path.join(root, 'dist/index.js')).href);
-  const { createAssistantMessageEventStream } = await import(pathToFileURL(path.resolve(root, '../pi-ai/dist/utils/event-stream.js')).href);
-  const { resolveTranscriptTools } = await import(pathToFileURL(path.resolve(root, '../pi-ai/dist/utils/transcript.js')).href);
+  const piAi = sdkDepDir(root, '@earendil-works/pi-ai');
+  const { createAssistantMessageEventStream } = await import(pathToFileURL(path.join(piAi, 'dist/utils/event-stream.js')).href);
+  const { resolveTranscriptTools } = await import(pathToFileURL(path.join(piAi, 'dist/utils/transcript.js')).href);
   const { convertToLlm } = await import(pathToFileURL(path.join(root, 'dist/core/messages.js')).href);
-  const { convertResponsesMessages } = await import(pathToFileURL(path.resolve(root, '../pi-ai/dist/api/openai-responses-shared.js')).href);
+  const { convertResponsesMessages } = await import(pathToFileURL(path.join(piAi, 'dist/api/openai-responses-shared.js')).href);
   const cwd = await mkdtemp(path.join(tmpdir(), 'preparation-sdk-'));
   try {
     await mkdir(path.join(cwd, 'skill'));

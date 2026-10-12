@@ -1,4 +1,5 @@
 import { isolatedSessions } from './session-fixture.mjs';
+import { snapPath } from './snap-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
@@ -57,7 +58,10 @@ test('file tree is bounded during traversal and respects nested ignores; Skill i
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test('real SDK: single prediction, checked read/bash, child persistence, metadata isolation and early exit', { skip: !root, timeout: 30000 }, async () => {
+test('real SDK: single prediction, checked read/bash, child persistence, metadata isolation and early exit', { skip: !root, timeout: 30000 }, async t => {
+  // Trajectory content is incidental input here; a stub keeps this test independent
+  // of any globally installed pi-snap. Real pi-snap behavior is covered in snap-trajectory.
+  await snapPath(t.after.bind(t), '#!/usr/bin/env bash\necho "fixture trajectory"\n');
   const sdk = await import(pathToFileURL(path.join(root, 'dist/index.js')).href);
   const piAi = sdkDepDir(root, '@earendil-works/pi-ai');
   const { createAssistantMessageEventStream } = await import(pathToFileURL(path.join(piAi, 'dist/utils/event-stream.js')).href);

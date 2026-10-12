@@ -1,0 +1,46 @@
+{
+  "model": "llama/iq3",
+  "note": "Transcribed from complete tool stdout after output-file write failed (missing results directory); no inference rerun. All four requests completed.",
+  "observations": [
+    {
+      "query": "代码审查 规范 review",
+      "ms": 928,
+      "names": [
+        "engineering-practice",
+        "software-lifecycle-principles"
+      ],
+      "pathsValid": true,
+      "pass": true
+    },
+    {
+      "query": "修改 Agent Skill 的发布脚本，并补上测试",
+      "ms": 559,
+      "names": [
+        "engineering-practice",
+        "agent-design"
+      ],
+      "pathsValid": true,
+      "pass": false,
+      "missingExpected": "obsidian-notes-to-skill"
+    },
+    {
+      "query": "帮我把这几个表的数据迁移到新版本，先分析兼容和回滚方案",
+      "ms": 541,
+      "names": [
+        "engineering-design",
+        "software-lifecycle-principles"
+      ],
+      "pathsValid": true,
+      "pass": true
+    },
+    {
+      "query": "给我画一张猫咪在花园里的插画",
+      "ms": 401,
+      "names": [
+        "image-generation"
+      ],
+      "pathsValid": true,
+      "pass": true
+    }
+  ]
+}

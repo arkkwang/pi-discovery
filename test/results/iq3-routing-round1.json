@@ -1,0 +1,130 @@
+{
+  "model": "llama/iq3",
+  "thinking": false,
+  "tools": false,
+  "catalog": [
+    {
+      "name": "agent-design",
+      "description": "Design, review, and improve how AI agents complete tasks. Use when creating or refining Agent Skills, shaping instructions, tools or context, comparing agent mechanisms, investigating recurring behavior problems, designing controlled tests of agent behavior, or tuning local model deployment for agent workloads."
+    },
+    {
+      "name": "document-writing",
+      "description": "Use when writing, revising, or reviewing documentation such as explanations, proposals, records, operation manuals, and Skill materials, or improving documents that are unclear, verbose, poorly organized, or hard to use."
+    },
+    {
+      "name": "engineering-design",
+      "description": "Use when resolving technical uncertainties or choosing architecture, data models, interfaces, concurrency controls, migrations, or rollout strategies for a new system or an existing change."
+    },
+    {
+      "name": "engineering-practice",
+      "description": "Use when implementing or refactoring code, fixing defects, integrating dependencies, debugging runtime failures, or selecting and running verification for a software change."
+    },
+    {
+      "name": "experience-design",
+      "description": "Use when translating product requirements into usable flows, information architecture, interaction feedback, prototypes, or consistent visual assets for SaaS, tools, websites, and games, or evaluating the resulting user experience."
+    },
+    {
+      "name": "final-acceptance",
+      "description": "Use when evaluating whether a software change or deliverable meets its original goal and agreed requirements, reviewing runtime evidence, identifying acceptance gaps, or deciding readiness and remaining risks."
+    },
+    {
+      "name": "image-generation",
+      "description": "当需要根据文字或参考图生成图片、编辑已有图片、制作角色与场景设定图，或修正构图、外观及多图一致性时使用。"
+    },
+    {
+      "name": "interface-design",
+      "description": "Use when designing or refining interface visuals and motion, translating style references into concrete layout and typography choices, reproducing an observed interface, or choosing visual components and animation resources."
+    },
+    {
+      "name": "obsidian-notes-to-skill",
+      "description": "Move Skills between an Obsidian vault and Agent runtime directories: list the Skills a vault contains, publish or update them into each named Agent runtime, and compare the installed copies against their vault source to surface drift, missing installs and leftovers. Use when a Skill was just written or edited in the vault and needs to reach the Agent, when checking whether what an Agent loads still matches the vault, when only one Skill or one Agent is in scope, or when cleaning up runtime copies left behind by deleted or withdrawn Skills."
+    },
+    {
+      "name": "obsidian-projects",
+      "description": "Use when creating or advancing Obsidian projects through PROJECT.md, choosing work items that serve an agreed goal, assessing progress against evidence, or managing project records, handoffs, dated deliverables and archival."
+    },
+    {
+      "name": "obsidian-vault-context",
+      "description": "Use when the user wants to work with notes in this Obsidian vault — create, edit, move, rename, delete, or query notes; modify vault-level config (plugins, templates, .obsidian/, attachments); capture a thought, idea, reflection, or impression; preserve or continue an exploratory discussion; log a daily journal entry; or provide links, articles, videos, excerpts, or discussion material for knowledge intake and integration (including bare links without a stated purpose)."
+    },
+    {
+      "name": "practical-memory",
+      "description": "查阅和维护用户审核的操作经验。执行以下任务、遇到以下问题，或用户要求记住、更新、整理、查看经验时使用。经验覆盖：Bilibili 视频、音频或字幕下载；通过 Gopeed 下载大文件（模型、压缩包等）；下载模型（Hugging Face / ModelScope）；切换 Node 版本后 npm 工具 / MCP server / CLI 报错；查看 Pi 会话执行过程与排查中断、错误；YouTube 视频、音频或字幕获取；使用 Tide 持续操作交互式命令行或让用户接手终端；取已登录网站的 Cookie 交给命令行脚本；撰写、审查与提交 GitHub Issue 或 PR；查看自己的 GitHub Issue 和 PR 进展；查询智谱 Key 的额度；将视频或音频转为纯文本。"
+    },
+    {
+      "name": "product-design",
+      "description": "当需要澄清用户目标与本次范围、取舍产品方案、明确可检查的业务规则，或依据使用证据判断功能保留、调整与下线时使用。"
+    },
+    {
+      "name": "software-lifecycle-principles",
+      "description": "Use when deciding software scope, complexity, responsibility boundaries, shared task context, evidence requirements, or lifecycle trade-offs across product, experience, engineering and acceptance work."
+    },
+    {
+      "name": "three-d-asset-generation",
+      "description": "当需要通过三维生成网站、图生三维服务或 Agent 操作 Blender 制作模型与场景资产，选择建模路线，或检查并导出三维资产时使用。"
+    },
+    {
+      "name": "video-generation",
+      "description": "制作独立短片或连续剧情片段：恢复项目故事与偏好，详细共创并同轮展示剧本和分镜，准备人物设定板与场景资产，用可弯曲简化人物和圆滑镜头完成 Blender 预演，分阶段确认后交付参考视频与 Seedance 提示词。"
+    }
+  ],
+  "observations": [
+    {
+      "query": "审查一下当前的代码 看是否符合我们的规范",
+      "ms": 20299,
+      "names": [
+        "engineering-practice",
+        "final-acceptance"
+      ]
+    },
+    {
+      "query": "Review the current code against our engineering standards.",
+      "ms": 521,
+      "names": [
+        "engineering-practice",
+        "final-acceptance"
+      ]
+    },
+    {
+      "query": "审查一下当前的代码 看是否符合我们的规范",
+      "ms": 493,
+      "names": [
+        "engineering-practice",
+        "final-acceptance"
+      ]
+    },
+    {
+      "query": "根据参考照片画一张同样人物的插画",
+      "ms": 575,
+      "names": [
+        "image-generation"
+      ]
+    },
+    {
+      "query": "调整网站的字体配色和滚动动效",
+      "ms": 507,
+      "names": [
+        "interface-design"
+      ]
+    },
+    {
+      "query": "把这个 B 站视频的字幕下载下来",
+      "ms": 569,
+      "names": [
+        "practical-memory"
+      ]
+    },
+    {
+      "query": "这份说明文档太啰嗦，帮我改得清楚一点",
+      "ms": 496,
+      "names": [
+        "document-writing"
+      ]
+    },
+    {
+      "query": "What is the capital of France?",
+      "ms": 460,
+      "names": []
+    }
+  ]
+}

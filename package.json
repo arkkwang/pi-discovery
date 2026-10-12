@@ -1,0 +1,60 @@
+{
+  "name": "@arkkwang/pi-discovery",
+  "version": "0.1.0",
+  "description": "Unified capability discovery and trajectory review for the Pi coding agent",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "ignore": "^7.0.12",
+    "yaml": "^2.9.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkkwang/pi-discovery.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "author": "arkkwang",
+  "files": [
+    "index.js",
+    "discovery.js",
+    "router.js",
+    "prompts.js",
+    "prefetch.js",
+    "observer.js",
+    "trajectory.js",
+    "model-request.js",
+    "context-index.js",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/arkkwang/pi-discovery#readme",
+  "bugs": {
+    "url": "https://github.com/arkkwang/pi-discovery/issues"
+  },
+  "keywords": [
+    "pi-agent",
+    "ai",
+    "pi-package"
+  ]
+}

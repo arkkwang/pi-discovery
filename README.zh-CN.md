@@ -109,6 +109,23 @@ pi install .
 - 包装 MCP 的 `before_agent_start`，原目录生成后合并成唯一能力目录。Skill 的 `metadata.catalog-description` 只用于主模型短目录；语义预测/审查仍用宿主完整 description。每次输入读取已解析 Skill 文件元数据，不扫描目录。
 - 工具加载沿宿主机制，不反复卸载。Astra 支持追加 `additional_tools`；其他接口可能更新顶层 tools，本插件不承诺所有模型零前缀缓存损失。
 
+### 从主会话排查推荐与审查
+
+主 JSONL 的 `customType: capability-prefetch-diagnostic` 是排障索引，不进入模型上下文。新增记录带 `version: 1`、每次用户输入的 `inputId` 和记录前的 `parentLeafId`；一次预测/审查用 `attempt` 关联，预取载体与交付用 `preparationId` 关联。
+
+| 事件 | 能确认什么 |
+| --- | --- |
+| `input` | 当次 `configuredOptions` 总配置、预取是否安排、用户新输入清零前的 `resetFromSteps` |
+| `gate` | 每轮结束为何审查或跳过：`due` / `below-interval` / `disabled` / `zero-interval` / `cancelled` / `invalid-settings`，以及当前 `steps`、`interval` |
+| `start` | 总配置 `configuredOptions` 与当前路径 `effectiveOptions`；预取路径关闭轨迹审查不表示总开关关闭 |
+| `session` / `review-input` | 子会话路径及审查输入来源、字符数和轨迹截断情况；完整实际输入与原始模型输出在子 JSONL |
+| `complete` / `failure` | 请求、动作、耗时、失败；审查明确区分 `warnings`、`no-warnings` 和 `failed` |
+| `context-ready` | 首次上下文钩子交出预取结果：`direct` 直接注入、`history` 已在上下文、`removed-from-context` 不复活已移除内容、`no-message` 无预取载体；含投影工具调用 ID |
+
+先用 `pi-snap SESSION --trace` 定位诊断记录，再用 `pi-snap SESSION ENTRY --json` 看字段；旧版 pi-snap 不展示诊断时，可直接读取主 JSONL 中上述 customType。`childSession.file` / `id` 指向完整推理证据。实际执行参数/结果保存在 `capability-prefetch.details.prefetch.rounds[].messages`，其数字毫秒时间是动作时间，父记录时间可能是延后落盘时间。不要用父记录的排列位置判断预取是否晚于主执行。
+
+证据边界：`context-ready` 只证明本扩展交出的上下文，不证明 provider 已接收或模型遵守；后续宿主处理仍可能改变请求。审查当前只接收系统指令、当前用户请求、Skill 描述及有界轨迹，不含完整已读 Skill 正文或工具结果正文；`review-input` 明示这一覆盖范围。不把审查无提醒等同于操作已获授权。旧日志缺少这些新增事件时，不反推总配置或未触发原因；进程崩溃、日志写入失败也可能留下未完成的 attempt。
+
 ### 接收确认与推荐耗时分离
 
 真实 Pi SDK 隔离测试以假 provider / 假推荐器代替外部模型，不发网络推理：将推荐固定阻塞10秒，实测接收确认约3ms返回，用户消息与会话文件已经存在，主 provider 请求仍为0；释放推荐后主模型才收到带建议的请求。工具轮次不重复推荐，取消后的迟到结果不进入下一次输入。另有并发 context、会话切换、已移除上下文不得复活的回归。这里测的是 SDK 确认边界，不是 HTTP/移动端整链延迟；MCP 连接和会话初始化的等待仍可能存在。

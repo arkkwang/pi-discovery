@@ -116,6 +116,18 @@ test('user input prepares capabilities/actions and never includes trajectory war
     assert.equal(prefetch.length, 1);
     assert.equal(prefetch[0].details.suggestions[0].name, 'demo-skill');
     assert.equal(prefetch[0].details.warnings, undefined);
+    const diagnostics = branch.filter(e => e.customType === 'capability-prefetch-diagnostic');
+    const input = diagnostics.find(e => e.data.event === 'input');
+    const ready = diagnostics.find(e => e.data.event === 'context-ready');
+    const start = diagnostics.find(e => e.data.event === 'start');
+    assert.equal(input.data.configuredOptions.trajectoryWarnings, true);
+    assert.equal(start.data.effectiveOptions.trajectoryWarnings, false);
+    assert.equal(ready.data.inputId, input.data.inputId);
+    assert.equal(ready.data.preparationId, prefetch[0].details.preparationId);
+    assert.equal(ready.data.delivery, 'direct');
+    const firstAssistant = branch.find(e => e.type === 'message' && e.message.role === 'assistant');
+    assert.ok(branch.indexOf(ready) < branch.indexOf(firstAssistant), 'hook delivery is recorded before the main response');
+    assert.equal(diagnostics.find(e => e.data.event === 'gate').data.reason, 'zero-interval');
     assert.ok(h.predicts[0].ctx.sessionManager.getSessionFile, 'predict runs with the real runner context');
     // The persisted message is part of the provider-visible context of the main request.
     assert.match(h.main[0], /demo-skill/);

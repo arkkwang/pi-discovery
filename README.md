@@ -109,6 +109,23 @@ The file contract has been verified with the SDK: messages/tool results are appe
 - Wraps the MCP `before_agent_start`; after the original catalog is generated, they are merged into a single capability catalog. A Skill's `metadata.catalog-description` is only used for the main model's short catalog; semantic prediction/review still uses the host's full description. Each input reads the already-parsed Skill file metadata instead of scanning directories.
 - Tool loading follows the host mechanism and does not repeatedly unload. Astra supports appending `additional_tools`; other interfaces may update top-level tools, and this plugin does not promise zero prefix-cache loss for all models.
 
+### Investigating preparation and review from the parent session
+
+Parent JSONL entries with `customType: capability-prefetch-diagnostic` index the evidence without entering model context. New entries carry `version: 1`, an `inputId` per user input, and the preceding `parentLeafId`. An `attempt` links one prediction/review; `preparationId` links the preparation carrier to context delivery.
+
+| Event | Evidence |
+| --- | --- |
+| `input` | Full `configuredOptions`, whether preparation is scheduled, and `resetFromSteps` before the new input resets the counter |
+| `gate` | Each completed round's review decision: `due`, `below-interval`, `disabled`, `zero-interval`, `cancelled`, or `invalid-settings`, with `steps` and `interval` |
+| `start` | `configuredOptions` versus path-local `effectiveOptions`; preparation disabling trajectory review does not mean the global switch is off |
+| `session` / `review-input` | Child session location and review input sources, character counts and trajectory truncation; exact input and raw model output remain in the child JSONL |
+| `complete` / `failure` | Requests, actions, timing and failures; review distinguishes `warnings`, `no-warnings` and `failed` |
+| `context-ready` | First context-hook delivery: `direct` injection, already in `history`, `removed-from-context` without revival, or `no-message`; includes projected tool-call IDs |
+
+Use `pi-snap SESSION --trace` to locate diagnostic entries, then `pi-snap SESSION ENTRY --json` for their fields. Older pi-snap versions may not display diagnostics; read the customType directly from the parent JSONL instead. Follow `childSession.file` / `id` for full inference evidence. Actual preparation arguments/results live in `capability-prefetch.details.prefetch.rounds[].messages`: their epoch-millisecond timestamps describe actions, while the parent timestamp may describe deferred persistence. Do not infer execution order from the carrier's position alone.
+
+Evidence limits: `context-ready` proves this extension returned context, not provider receipt or model compliance; later host processing may change the request. Review currently receives system instructions, the current request, Skill descriptions and a bounded trajectory, not full retained Skill bodies or tool-result bodies; `review-input` makes this coverage explicit. No warning is not authorization. Missing events in older logs do not establish global settings or skip reasons; process crashes and logging failures may also leave incomplete attempts.
+
 ### Receive acknowledgment separated from recommendation latency
 
 Real Pi SDK isolated tests replace external models with a fake provider / fake recommender and make no network inference calls: with the recommendation fixed to block for 10 seconds, the receive acknowledgment was measured to return in about 3ms, the user message and session file already existed, and the main provider request count was still 0; only after the recommendation was released did the main model receive the request with suggestions. Tool turns do not re-run recommendations, and late results after cancellation do not enter the next input. There are additional regressions covering concurrent context, session switching, and removed context not being revived. What is measured here is the SDK acknowledgment boundary, not full HTTP/mobile end-to-end latency; waits for MCP connection and session initialization can still exist.

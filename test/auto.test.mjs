@@ -46,14 +46,17 @@ test('enabled preparation setup failure does not block the user and omits sensit
   const ctx = context();
   assert.equal((await before(s, ctx, 'SECRET PROMPT')).output, undefined);
   assert.equal(ctx.notices.length, 1);
-  assert.equal(s.diagnostics.at(-1).data.cause, 'error');
-  assert.equal(s.diagnostics.at(-1).data.error, 'Pi SDK prediction adapter is unavailable');
+  const failure = s.diagnostics.find(e => e.data.event === 'failure').data;
+  assert.equal(failure.cause, 'error');
+  assert.equal(failure.error, 'Pi SDK prediction adapter is unavailable');
+  assert.equal(s.diagnostics.at(-1).data.delivery, 'no-message');
   assert.doesNotMatch(JSON.stringify(s.diagnostics), /SECRET/);
   assert.deepEqual(s.calls, ['mcp-prompt']);
   const cancelled = context(); cancelled.signal = AbortSignal.abort();
   await before(s, cancelled);
-  // Cancellation is checked before dispatch and before diagnostic creation.
-  assert.equal(s.diagnostics.at(-1).data.cause, 'error');
+  // Input decisions remain visible, but cancellation prevents dispatch.
+  assert.equal(s.diagnostics.filter(e => e.data.event === 'start').length, 1);
+  assert.equal(s.diagnostics.at(-1).data.event, 'input');
   assert.equal(cancelled.notices.length, 0);
   s.pi.appendEntry = () => { throw new Error('disk unavailable'); };
   assert.equal((await before(s, ctx)).output, undefined);

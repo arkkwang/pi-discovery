@@ -153,3 +153,64 @@ test('repeated concurrent contexts share prediction and persist exactly once; sw
   sessionId='second';other.handlers.session_switch({},switchCtx);finishOld();
   assert.deepEqual((await pending).messages,[]);assert.equal(other.sent.length,0);
 });
+
+test('parent diagnostics distinguish configured switches, effective preparation and context delivery', async () => {
+  const f = fixture();
+  await f.input();
+  const events = f.s.diagnostics.map(e => e.data);
+  const input = events.find(e => e.event === 'input');
+  assert.equal(input.configuredOptions.trajectoryWarnings, true);
+  assert.equal(input.resetFromSteps, 0);
+  const start = events.find(e => e.event === 'start');
+  assert.equal(start.configuredOptions.trajectoryWarnings, true);
+  assert.equal(start.effectiveOptions.trajectoryWarnings, false);
+  assert.equal(start.inputId, input.inputId);
+  const context = events.find(e => e.event === 'context-ready');
+  assert.equal(context.inputId, input.inputId);
+  assert.equal(context.preparationId, f.s.sent[0].message.details.preparationId);
+  assert.equal(context.stage, 'context-hook-return');
+  assert.equal(f.s.sent[0].message.details.inputId, input.inputId);
+});
+
+test('parent diagnostics explain each review gate and resets; empty review is not a skipped review', async () => {
+  const f = fixture({}, []);
+  await f.input(); await f.step(); await f.input(); await f.step(); await f.step();
+  const events = f.s.diagnostics.map(e => e.data);
+  assert.deepEqual(events.filter(e => e.event === 'gate').map(e => [e.reason, e.steps]),
+    [['below-interval', 1], ['below-interval', 1], ['due', 2]]);
+  assert.equal(events.filter(e => e.event === 'input')[1].resetFromSteps, 1);
+  const complete = events.find(e => e.trigger === 'periodic' && e.event === 'complete');
+  assert.equal(complete.warningCount, 0);
+  assert.equal(complete.outcome, 'no-warnings');
+  assert.equal(complete.configuredOptions.trajectoryWarnings, true);
+});
+
+test('disabled preparation and review, zero interval and cancelled rounds leave explicit decisions', async () => {
+  for (const [config, reason] of [[{ trajectoryWarnings: false }, 'disabled'],
+    [{ trajectoryWarningEverySteps: 0 }, 'zero-interval']]) {
+    const f = fixture({ capabilityPrediction: false, actionPrediction: false, ...config });
+    await f.input(); await f.step();
+    assert.equal(f.s.diagnostics.find(e => e.data.event === 'input').data.preparation, 'disabled');
+    assert.equal(f.s.diagnostics.at(-1).data.reason, reason);
+  }
+  const f = fixture(); await f.input(); f.ctx.signal = AbortSignal.abort(); await f.step();
+  assert.equal(f.s.diagnostics.at(-1).data.reason, 'cancelled');
+});
+
+test('incident regression: 11 rounds, user correction, 3 rounds explains why interval 15 never reviewed', async () => {
+  const f = fixture({ trajectoryWarningEverySteps: 15 });
+  await f.input();
+  for (let i = 0; i < 11; i++) await f.step();
+  await f.input();
+  for (let i = 0; i < 3; i++) await f.step();
+  assert.equal(f.reviews.length, 0);
+  const events = f.s.diagnostics.map(e => e.data);
+  const inputs = events.filter(e => e.event === 'input');
+  assert.equal(inputs[1].resetFromSteps, 11);
+  assert.notEqual(inputs[0].inputId, inputs[1].inputId);
+  const gates = events.filter(e => e.event === 'gate');
+  assert.equal(gates.length, 14);
+  assert.ok(gates.every(e => e.reason === 'below-interval' && e.enabled && e.interval === 15));
+  assert.equal(gates[10].steps, 11);
+  assert.equal(gates[11].steps, 1);
+});

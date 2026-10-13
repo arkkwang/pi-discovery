@@ -272,12 +272,12 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const ids = observedInput;
     for (const id of ['skill:test', 'mcp:mcp__pending', 'mcp:mcp__ready', 'mcp:mcp__undescribed', 'tool:notify', 'tool:subagent_start']) assert.ok(ids.includes(id));
     assert.ok(!ids.includes('tool:hidden_tool'));
-    const recommendationSession = sdk.SessionManager.open(hook.diagnostics.at(-1).data.childSession.file);
+    const recommendationSession = sdk.SessionManager.open(hook.diagnostics.findLast(e => e.data.event === 'complete').data.childSession.file);
     const savedSchema = recommendationSession.getEntries().find(e => e.customType === 'capability-recommendation-schema');
     assert.deepEqual(savedSchema.data, observedPayload.response_format.json_schema);
     assert.deepEqual([...observedInput.matchAll(/^### (mcp:[a-z_]+)/gm)].map(m => m[1]).sort(),
       ['mcp:mcp__pending', 'mcp:mcp__ready', 'mcp:mcp__undescribed']);
-    assert.equal(hook.diagnostics.at(-1).data.capabilities.mcp, 3);
+    assert.equal(hook.diagnostics.findLast(e => e.data.event === 'complete').data.capabilities.mcp, 3);
     assert.equal(output.message.details.diagnostics, undefined);
     const projected = projectPrefetch([{ ...output.message, role: 'custom' }]);
     assert.deepEqual(projectPrefetch(projected), projected);
@@ -286,8 +286,8 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(provider.filter(m => m.type === 'function_call').length, 2);
     assert.equal(provider.filter(m => m.type === 'function_call_output').length, 2);
     assert.doesNotMatch(JSON.stringify(provider), /childSession|inferenceMs|endReason|totalMs/);
-    assert.ok(hook.diagnostics.at(-1).data.childSession.file);
-    assert.equal(hook.diagnostics.at(-1).data.requests, 1);
+    assert.ok(hook.diagnostics.findLast(e => e.data.event === 'complete').data.childSession.file);
+    assert.equal(hook.diagnostics.findLast(e => e.data.event === 'complete').data.requests, 1);
 
     expectedLimit = 0;
     value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [] };
@@ -299,8 +299,8 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const zeroOutput = { message: zeroContext.messages.find(m => m.customType === PREFETCH_TYPE) };
     assert.equal(zeroOutput.message.details.suggestions.length, 1);
     assert.equal(zeroOutput.message.details.prefetch.rounds.length, 0);
-    assert.equal(zero.diagnostics.at(-1).data.tree.entries, 0);
-    assert.equal(zero.diagnostics.at(-1).data.requests, 1);
+    assert.equal(zero.diagnostics.findLast(e => e.data.event === 'complete').data.tree.entries, 0);
+    assert.equal(zero.diagnostics.findLast(e => e.data.event === 'complete').data.requests, 1);
     expectedLimit = 3;
 
     value = { suggestions: [], actions: [] }; predictions = 0;

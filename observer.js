@@ -22,6 +22,16 @@ export async function runTrajectoryReview({ sdk, ctx, options, trajectory, skill
     parentLeafId: ctx.sessionManager?.getLeafId?.(),
   });
   trace('session', { childSession });
+  trace('review-input', {
+    // Exact submitted text is saved in childSession; these sizes/sources explain
+    // evidence coverage without duplicating private prompts in the parent log.
+    sources: ['system-instructions', 'current-user-request', 'skill-descriptions', 'bounded-trajectory'],
+    skillBodiesIncluded: false, toolResultBodiesIncluded: false,
+    characters: { systemPrompt: systemPrompt?.length ?? 0, userPrompt: userPrompt?.length ?? 0,
+      trajectory: trajectory?.length ?? 0, submittedInput: prompts.input.length },
+    skillCount: skills.filter(c => c.type === 'skill').length,
+    trajectoryTruncated: trajectory?.includes('[Earlier pi-snap output omitted; truncated]') ?? false,
+  });
   let warnings = [], requests = 0, inferenceMs = 0, failure;
   try {
     warnings = validateTrajectory(await requestModel({ sdk, ctx, options, manager, prompts, schema: trajectorySchema, signal, trace,

@@ -18,12 +18,43 @@ test('executes source pi-snap via PATH; arguments are literal; no local semantic
   {type:'context_edit',targetId:'e2',replacement:null},
  ]);
  const text=await executionTrajectory(sm);
- // pi-snap ≥0.3.3 keeps context edits out of the default trajectory (host bookkeeping,
- // visible via --trace/entry details); success result bodies are omitted there as well.
- for(const value of ['Task','Checking','git status','ERR','compact']) assert.ok(text.includes(value),text);
- assert.doesNotMatch(text,/SECRET/);
+ // The caller selects a preset; it must not rely on pi-snap's unfiltered default.
+ for(const value of ['Task','Checking','git status','[   1]','[   2]']) assert.ok(text.includes(value),text);
+ assert.doesNotMatch(text,/SECRET|\[←|\[compaction\]|\[context_edit\]/);
  const query=await recommendationQuery('CURRENT',sm,[{data:'IMAGE_SECRET'}]);
  assert.match(query,/CURRENT/);assert.match(query,/\[image\]/);assert.doesNotMatch(query,/IMAGE_SECRET/);
+});
+
+test('passes explicit selection and unlimited row length to the CLI', async t => {
+ await snapPath(t.after.bind(t), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@"\n');
+ const sm=await sessionFixture(t.after.bind(t),[message('user','history')]);
+ const text=await executionTrajectory(sm);
+ assert.ok(text.includes(sm.getSessionFile()));
+ assert.match(text,/--preset\ntrajectory\n--max-chars\n0\n--tail\n160/);
+});
+
+test('recommendations and calls survive; hidden payloads do not; custom messages count as history', { skip: snapCliMissing }, async t => {
+ await snapPath(t.after.bind(t));
+ const recommendation={customType:'capability-prefetch',content:'RECOMMENDATION',details:{prefetch:{rounds:[{messages:[
+  {role:'assistant',timestamp:1791849601000,content:[{type:'toolCall',id:'pre',name:'read',arguments:{path:'PREP_FILE'}}]},
+  {role:'toolResult',timestamp:1791849602000,toolCallId:'pre',isError:false,content:'PREP_RESULT_SECRET'},
+ ]}]}}};
+ for(const entry of [{type:'custom_message',...recommendation},message('custom',recommendation.content,recommendation)]) {
+  const sm=await sessionFixture(t.after.bind(t),[entry]);
+  const text=await executionTrajectory(sm);
+  assert.match(text,/RECOMMENDATION/);assert.match(text,/recommend → read/);assert.match(text,/PREP_FILE/);
+  assert.doesNotMatch(text,/PREP_RESULT_SECRET/);
+ }
+ const sm=await sessionFixture(t.after.bind(t),[
+  message('user',[{type:'text',text:'USER_TEXT'},{type:'image',data:'IMAGE_SECRET'}]),
+  message('assistant',[{type:'thinking',thinking:'THINK_SECRET'},{type:'text',text:'ASSISTANT_TEXT'},
+   {type:'toolCall',id:'call',name:'new-tool',arguments:{newField:'ARGUMENT'}}]),
+  message('toolResult','RESULT_SECRET',{toolCallId:'call',isError:false}),
+  {type:'custom_message',customType:'capability-trajectory-warning',content:'PRIOR_ADVICE'},
+ ]);
+ const text=await executionTrajectory(sm);
+ for(const value of ['USER_TEXT','ASSISTANT_TEXT','ARGUMENT','PRIOR_ADVICE']) assert.ok(text.includes(value),text);
+ assert.doesNotMatch(text,/SECRET/);
 });
 
 test('outer budget crops plain output to recent 6000, current request remains separate', { skip: snapCliMissing }, async t => {

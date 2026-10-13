@@ -24,7 +24,7 @@ pi install npm:@arkkwang/pi-discovery
 pi install .
 ```
 
-轨迹相关功能另需 pi-snap 在 `PATH` 中（`npm install -g @arkkwang/pi-snap`），且其默认输出需具备正式轨迹语义（完整对话、工具关键参数/状态、原位置中断与 compaction 事件）；只输出对话/调用计数的旧版不满足契约，本扩展不会自行升级命令。CLI 缺失或失败时预测/审查显式失败，由外围 warning 与 diagnostic fail-open 保持主任务可继续。
+轨迹相关功能另需 pi-snap **≥0.4.0** 在 `PATH` 中（`npm install -g @arkkwang/pi-snap`），支持显式 `trajectory` 预设。本扩展不会自行升级命令。CLI 缺失或失败时预测/审查显式失败，由外围 warning 与 diagnostic fail-open 保持主任务可继续。
 
 ## 配置
 
@@ -93,7 +93,7 @@ pi install .
 
 ## 执行轨迹与事件
 
-两条入口都异步调用同一个现有命令：`pi-snap <sessionManager.getSessionFile()> --tail 160`。轨迹语义只由 pi-snap 的**默认输出**维护（≥0.3.3）：完整对话、工具调用参数（截断）、失败或未知结果的一行状态、原位置中断，以及 compaction 与 branch_summary 摘要；上下文摘除（context_edit）是宿主处理痕迹，默认轨迹不含，仅在 `--trace` 与单条详情可见。thinking、图片 payload 及工具结果正文（含错误与 host 准备结果，用户图片仍有占位）同样省略。本扩展不解析历史消息生成另一套轨迹，读取去重仍独立使用 SDK 有效上下文投影。
+两条入口都异步调用 `pi-snap <sessionManager.getSessionFile()> --preset trajectory --max-chars 0 --tail 160`，显式选择当前分支的 User／Assistant、工具调用发起、行为推荐和已有纠偏提醒，排除 thinking、图片和工具结果（包括错误与预取结果）。`--max-chars 0` 避免正文先被逐行截断，再由下述总预算保留最近内容。预设负责筛选与单行展示，不依赖 pi-snap 的默认输出，也不推断调用是否成功；完整证据可按输出序号展开。本扩展不解析历史消息生成另一套轨迹，读取去重仍独立使用 SDK 有效上下文投影。
 
 宿主通过固定 Bash 命令 `exec pi-snap "$@"` 传独立参数，兼容 Git Bash/macOS Bash，不拼接路径进 shell 脚本，不查安装目录、不新增本地 npm 依赖。单次 CLI 超时 5 秒，继承触发取消信号，stdout/stderr 缓冲各限 8 MiB；这部分包含在 60 秒总预算内。只对输出字符串保留近期 6000 字符并标明截断，不重新解释语义；开头当前请求独立保留首尾约 4000 字符。工具参数或早期记录被省略不证明它们不存在。
 
@@ -122,7 +122,7 @@ pi install .
 | `complete` / `failure` | 请求、动作、耗时、失败；审查明确区分 `warnings`、`no-warnings` 和 `failed` |
 | `context-ready` | 首次上下文钩子交出预取结果：`direct` 直接注入、`history` 已在上下文、`removed-from-context` 不复活已移除内容、`no-message` 无预取载体；含投影工具调用 ID |
 
-先用 `pi-snap SESSION --trace` 定位诊断记录，再用 `pi-snap SESSION ENTRY --json` 看字段；旧版 pi-snap 不展示诊断时，可直接读取主 JSONL 中上述 customType。`childSession.file` / `id` 指向完整推理证据。实际执行参数/结果保存在 `capability-prefetch.details.prefetch.rounds[].messages`，其数字毫秒时间是动作时间，父记录时间可能是延后落盘时间。不要用父记录的排列位置判断预取是否晚于主执行。
+用 `pi-snap SESSION --only customType:capability-prefetch-diagnostic` 定位诊断记录，再用 `pi-snap SESSION ENTRY --json` 看字段；ENTRY 可用输出序号或原始 ID。`childSession.file` / `id` 指向完整推理证据。实际执行参数/结果保存在 `capability-prefetch.details.prefetch.rounds[].messages`，其数字毫秒时间是动作时间，父记录时间可能是延后落盘时间。不要用父记录的排列位置判断预取是否晚于主执行。
 
 证据边界：`context-ready` 只证明本扩展交出的上下文，不证明 provider 已接收或模型遵守；后续宿主处理仍可能改变请求。审查当前只接收系统指令、当前用户请求、Skill 描述及有界轨迹，不含完整已读 Skill 正文或工具结果正文；`review-input` 明示这一覆盖范围。不把审查无提醒等同于操作已获授权。旧日志缺少这些新增事件时，不反推总配置或未触发原因；进程崩溃、日志写入失败也可能留下未完成的 attempt。
 

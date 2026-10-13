@@ -47,6 +47,7 @@ test('enabled preparation setup failure does not block the user and omits sensit
   assert.equal((await before(s, ctx, 'SECRET PROMPT')).output, undefined);
   assert.equal(ctx.notices.length, 1);
   assert.equal(s.diagnostics.at(-1).data.cause, 'error');
+  assert.equal(s.diagnostics.at(-1).data.error, 'Pi SDK prediction adapter is unavailable');
   assert.doesNotMatch(JSON.stringify(s.diagnostics), /SECRET/);
   assert.deepEqual(s.calls, ['mcp-prompt']);
   const cancelled = context(); cancelled.signal = AbortSignal.abort();

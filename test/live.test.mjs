@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { registerDiscovery } from '../discovery.js';
+import { isolatedSessions } from './session-fixture.mjs';
 
 const sdkRoot = process.env.PI_DISCOVERY_SDK_ROOT;
 const deferred = [
@@ -52,12 +53,16 @@ test('live IQ3 routing: original failure, cross-language tasks and no-match boun
     { name: 'mcp__exa', description: 'Search the web and read webpage content with Exa.' },
   ];
   const { createToolSearchExtension } = await sdk('extensions/tool-search/index.js');
-  let hook, tool, active = ['tool_search'], autoRecommend = false;
-  registerDiscovery({ on: (_name, fn) => { hook = fn; }, registerTool: value => { tool = value; },
+  const hostSdk = await import(pathToFileURL(path.join(sdkRoot, 'dist/index.js')).href);
+  const handlers = {}, sent = [], diagnostics = [];
+  let tool, active = ['tool_search'], autoRecommend = false;
+  registerDiscovery({ on: (name, fn) => { handlers[name] = fn; }, registerTool: value => { tool = value; },
+    appendEntry: (type, data) => diagnostics.push({ type, data }),
+    sendMessage: message => sent.push(message),
     getSettings: () => ({ capabilityDiscovery: { capabilityPrediction: autoRecommend, maxSuggestedActions: 0 } }), getActiveTools: () => active, setActiveTools: names => { active = names; },
     getAllTools: () => [...deferred, ...namespaces.map(namespace => ({ description: namespace.description, parameters: { type: 'object', properties: {} }, name: `${namespace.name}__fixture`, exposure: 'deferred', namespace }))],
-  }, { sdk: await import(pathToFileURL(path.join(sdkRoot, 'dist/index.js')).href), createToolSearchExtension, createMcpExtension: () => pi => pi.on('before_agent_start', () => {}) });
-  await hook({ systemPromptOptions: { skills, sections: {} } });
+  }, { sdk: { ...hostSdk, SessionManager: isolatedSessions(hostSdk, temp), ModelRuntime: { create: async () => runtime } }, createToolSearchExtension, createMcpExtension: () => pi => pi.on('before_agent_start', () => {}) });
+  await handlers.before_agent_start({ systemPromptOptions: { skills, sections: {} } });
   const observations = [];
   try {
     for (const entry of cases) {
@@ -95,11 +100,16 @@ test('live IQ3 routing: original failure, cross-language tasks and no-match boun
     ]) {
       await t.test(`auto: ${entry.prompt}`, async () => {
         const notices = [], start = performance.now();
-        const result = await hook({ prompt: entry.prompt, systemPromptOptions: { skills, sections: {} } }, {
-          cwd: temp, modelRegistry: registry, sessionManager: { getSessionDir: () => temp, getBranch: () => [{ type: 'message', message: { role: 'user', content: entry.prior } }] },
-          ui: { notify: text => notices.push(text) },
-        });
-        const names = result?.message?.details.suggestions.map(s => s.name) ?? [];
+        const parent = hostSdk.SessionManager.create(temp, path.join(temp, 'parents'));
+        parent.appendMessage({ role: 'user', content: entry.prior, timestamp: Date.now() });
+        const ctx = { cwd: temp, modelRegistry: registry, sessionManager: parent,
+          ui: { notify: text => notices.push(text) } };
+        sent.length = 0; diagnostics.length = 0;
+        await handlers.before_agent_start({ prompt: entry.prompt, systemPromptOptions: { skills, sections: {} } }, ctx);
+        parent.appendMessage({ role: 'user', content: entry.prompt, timestamp: Date.now() });
+        await handlers.context({ messages: parent.buildSessionContext().messages }, ctx);
+        const names = sent.at(-1)?.details.suggestions.map(s => s.name) ?? [];
+        assert.ok(diagnostics.some(d => d.data.event === 'request'), 'automatic preparation must reach the model');
         const observation = { mode: 'auto', ...entry, ms: Math.round(performance.now() - start), names, notices };
         observations.push(observation); console.log(JSON.stringify(observation));
         assert.deepEqual(notices, []); assert.ok(names.includes(entry.required));

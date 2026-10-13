@@ -32,35 +32,60 @@ export function projectPrefetch(messages) {
       .flatMap(round => round.messages)];
   });
 }
+// Malformed model output degrades per item: invalid entries are dropped
+// so one bad item never discards valid ones.
+// Kept actions still pass the same allowlist checks that guarded execution before.
 export function validatePrediction(value, catalog, files, options = {}) {
   options = recommendationOptions(options);
   const limit = options.actionPrediction ? options.maxSuggestedActions : 0;
   const required = predictionFields(options);
-  if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).length !== required.length
-    || required.some(key => !Array.isArray(value[key]))
-    || Object.keys(value).some(key => !required.includes(key))) throw new Error('Invalid prediction');
-  value = { suggestions: [], actions: [], ...value };
-  if (value.actions.length > limit) throw new Error('Invalid prediction');
+  const dropped = [];
+  const bounded = item => {
+    try { const text = JSON.stringify(item); return text.length <= 4000 ? item : `${text.slice(0, 4000)}…`; }
+    catch { return String(item); }
+  };
+  const drop = (kind, reason, item) => dropped.push(item === undefined ? { kind, reason } : { kind, reason, item: bounded(item) });
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    drop('response', 'not-an-object');
+    return { suggestions: [], actions: [], dropped };
+  }
+  for (const key of Object.keys(value)) if (!required.includes(key)) drop('field', 'unknown-field', key);
+  const parseList = (field, kind) => {
+    if (!required.includes(field)) return [];
+    if (value[field] === undefined) { if (required.includes(field)) drop(kind, 'missing-field'); return []; }
+    if (!Array.isArray(value[field])) { drop(kind, 'not-an-array'); return []; }
+    return value[field];
+  };
   const capabilities = new Map(catalog.map(c => [`${c.type}:${c.name}`, c]));
   const paths = new Set(files.map(f => f.key ?? f.path));
-  const suggestions = value.suggestions.map(item => {
-    if (!item || Object.keys(item).some(k => !['id', 'confidence'].includes(k)) || !capabilities.has(item.id)
-      || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1) throw new Error('Invalid capability');
-    return { ...capabilities.get(item.id), confidence: item.confidence };
+  const suggestions = parseList('suggestions', 'suggestion').flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+      || Object.keys(item).some(k => !['id', 'confidence'].includes(k)) || !capabilities.has(item.id)
+      || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1) {
+      drop('suggestion', 'invalid-capability', item); return [];
+    }
+    return [{ ...capabilities.get(item.id), confidence: item.confidence }];
   });
-  const seen = new Set();
-  const actions = value.actions.filter(action => {
-    if (!action || Object.keys(action).some(k => !['tool', 'arguments'].includes(k)) || !action.arguments
-      || Object.keys(action.arguments).length !== 1
+  const kept = parseList('actions', 'action').filter(action => {
+    if (!action || typeof action !== 'object' || Array.isArray(action)
+      || Object.keys(action).some(k => !['tool', 'arguments'].includes(k)) || !action.arguments
+      || typeof action.arguments !== 'object' || Array.isArray(action.arguments) || Object.keys(action.arguments).length !== 1
       || !(action.tool === 'read' && paths.has(action.arguments.path)
         || action.tool === 'bash' && typeof action.arguments.command === 'string'
-          && action.arguments.command.trim().length > 0 && action.arguments.command.length <= 2000 && !action.arguments.command.includes('\0'))) throw new Error('Action is not allowed');
-    const key = JSON.stringify(action);
-    if (seen.has(key)) return false;
-    seen.add(key); return true;
+          && action.arguments.command.trim().length > 0 && action.arguments.command.length <= 2000 && !action.arguments.command.includes('\0'))) {
+      drop('action', 'invalid-action', action); return false;
+    }
+    return true;
   });
-  return { suggestions, actions };
+  const seen = new Set(), actions = [];
+  for (const action of kept) {
+    const key = JSON.stringify(action);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (actions.length >= limit) { drop('action', 'over-budget', action); continue; }
+    actions.push(action);
+  }
+  return { suggestions, actions, dropped };
 }
 // Bound the serialized field, including JSON escaping; never enumerate the read set
 // itself (it may contain paths outside the current allowed file index).
@@ -130,6 +155,7 @@ ${query}`;
     const value = await requestModel({ sdk, ctx, options, manager, prompts, schema, signal, trace,
       onRequest: () => { requests++; }, onInference: ms => { inferenceMs = ms; } });
     prediction = validatePrediction(value, catalog, files, options);
+    if (prediction.dropped.length) trace('drop', { dropped: prediction.dropped });
     manager.appendCustomEntry('capability-action-dispatch', { actor: 'host', actions: prediction.actions });
     for (const action of prediction.actions) {
       signal?.throwIfAborted();
@@ -185,7 +211,7 @@ ${query}`;
     }
   } catch (error) {
     failure = signal?.aborted ? 'cancelled-or-timeout' : requests ? 'prediction-error' : 'setup-error';
-    trace('failure', { cause: failure });
+    trace('failure', { cause: failure, ...(signal?.aborted ? {} : { error: String(error?.message ?? error) }) });
   } finally {
     // SDK flushes on first user/assistant record. Keep submitted input on setup failure.
     if (!manager.getBranch().some(e => e.type === 'message' && e.message.role === 'user')) {
@@ -195,6 +221,7 @@ ${query}`;
   const endReason = failure ?? (rounds.some(r => r.messages[1].isError) ? 'action-error' : rounds.length ? 'actions-complete' : 'no-actions-needed');
   const diagnostics = { childSession, endReason, totalMs: Math.round(performance.now() - start), inferenceMs,
     requests: Math.min(requests, 1), actions: actionTimings, skipped,
+    ...(prediction.dropped?.length ? { dropped: prediction.dropped } : {}),
     capabilities: Object.fromEntries(['skill', 'mcp', 'tool'].map(type => [type, catalog.filter(c => c.type === type).length])), tree: tree && { elapsedMs: tree.elapsedMs, entries: tree.entries.length,
       visited: tree.visited, truncated: tree.truncated, reason: tree.reason } };
   manager.appendCustomEntry('capability-recommendation-outcome', diagnostics);

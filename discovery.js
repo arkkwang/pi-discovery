@@ -118,7 +118,8 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
       if (result.failure || result.prefetch?.failure) ctx.ui.notify('能力预测／轨迹分析未完整完成；仍可使用 tool_search。', 'warning');
       return result;
     } catch (error) {
-      trace('failure', { cause: ctx.signal?.aborted ? 'caller' : deadline.aborted ? 'deadline' : 'error' });
+      trace('failure', { cause: ctx.signal?.aborted ? 'caller' : deadline.aborted ? 'deadline' : 'error',
+        ...(ctx.signal?.aborted ? {} : { error: String(error?.message ?? error) }) });
       if (!ctx.signal?.aborted) ctx.ui.notify(`能力预测／轨迹分析失败：${error.message}；仍可使用 tool_search。`, 'warning');
     }
   }

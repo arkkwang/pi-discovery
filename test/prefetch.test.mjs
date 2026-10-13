@@ -15,20 +15,53 @@ const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 const answer = value => ({ role: 'assistant', content: [{ type: 'text', text: JSON.stringify(value) }],
   provider: 'llama', model: 'iq3', api: 'openai-completions', usage, timestamp: Date.now(), stopReason: 'stop' });
 
-test('action limit and argument bounds are enforced, without a command menu', () => {
+test('invalid prediction items are dropped without aborting valid ones', () => {
   assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { provider: 'llama', model: 'iq3', capabilityPrediction: false, actionPrediction: false, trajectoryWarnings: false, trajectoryWarningEverySteps: 5, maxSuggestedActions: 0, autoRecommendThinkingLevel: 'medium', toolSearchThinkingLevel: 'medium' });
   assert.deepEqual(recommendationOptions(), { provider: 'llama', model: 'iq3', capabilityPrediction: false, actionPrediction: false, trajectoryWarnings: false, trajectoryWarningEverySteps: 5, maxSuggestedActions: 3, autoRecommendThinkingLevel: 'medium', toolSearchThinkingLevel: 'medium' });
   assert.deepEqual(recommendationOptions({ capabilityPrediction: true }), { provider: 'llama', model: 'iq3', capabilityPrediction: true, actionPrediction: false, trajectoryWarnings: false, trajectoryWarningEverySteps: 5, maxSuggestedActions: 3, autoRecommendThinkingLevel: 'medium', toolSearchThinkingLevel: 'medium' });
   for (const config of [{ prefetch: { maxSuggestedActions: 3 } }, { autoRecommend: 'true' }, { maxSuggestedActions: null }, { maxRunRounds: 3, maxRecommendedRounds: 2 }, { maxSuggestedActions: -1 }, { maxSuggestedActions: 9 }, null]) assert.throws(() => recommendationOptions(config));
   const catalog = [{ type: 'skill', name: 'test' }], files = [{ path: '/skill/SKILL.md' }];
+  const opts = { actionPrediction: true, maxSuggestedActions: 3 };
+  const kept = { tool: 'bash', arguments: { command: 'pwd' } };
   for (const command of ['', '   ', 42, 'x'.repeat(2001), 'a\0b']) {
-    assert.throws(() => validatePrediction({ actions: [{ tool: 'bash', arguments: { command } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 3 }));
+    const result = validatePrediction({ actions: [{ tool: 'bash', arguments: { command } }, kept] }, catalog, files, opts);
+    assert.deepEqual(result.actions, [kept]);
+    assert.deepEqual(result.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'bash', arguments: { command } } }]);
   }
-  assert.equal(validatePrediction({ actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 3 }).actions.length, 1);
-  assert.throws(() => validatePrediction({ actions: [{ tool: 'read', arguments: { path: '/secret' } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 3 }));
+  assert.deepEqual(validatePrediction({ actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }] }, catalog, files, opts),
+    { suggestions: [], actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }], dropped: [] });
+  const read = { tool: 'read', arguments: { path: '/skill/SKILL.md' } };
+  const outside = validatePrediction({ actions: [{ tool: 'read', arguments: { path: '/secret' } }, read] }, catalog, files, opts);
+  assert.deepEqual(outside.actions, [read]);
+  assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'read', arguments: { path: '/secret' } } }]);
+  assert.equal(validatePrediction({ actions: [kept, kept] }, catalog, files, opts).actions.length, 1);
+  const overBudget = validatePrediction({ actions: [kept, { tool: 'bash', arguments: { command: 'ls' } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 1 });
+  assert.deepEqual(overBudget.actions, [kept]);
+  assert.deepEqual(overBudget.dropped, [{ kind: 'action', reason: 'over-budget', item: { tool: 'bash', arguments: { command: 'ls' } } }]);
+  assert.deepEqual(validatePrediction({ actions: [kept] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 0 }),
+    { suggestions: [], actions: [], dropped: [{ kind: 'action', reason: 'over-budget', item: kept }] });
+  const flattened = validatePrediction({ actions: [{ tool: 'bash', command: 'pwd' }, { tool: 'read', path: '/skill/SKILL.md' }] }, catalog, files, opts);
+  assert.deepEqual(flattened.actions, []);
+  assert.equal(flattened.dropped.length, 2);
+  assert.deepEqual(validatePrediction({ suggestions: [{ id: 'skill:test', confidence: 0.9 }, { id: 'unknown', confidence: 1 }, { id: 'skill:test', confidence: 2 }] }, catalog, files, { capabilityPrediction: true }).suggestions,
+    [{ type: 'skill', name: 'test', confidence: 0.9 }]);
+});
+
+test('disabled output fields cannot leak valid capabilities or dispatch actions', () => {
+  const catalog = [{ type: 'skill', name: 'test' }];
   const action = { tool: 'bash', arguments: { command: 'pwd' } };
-  assert.equal(validatePrediction({ actions: [action, action] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 3 }).actions.length, 1);
-  assert.throws(() => validatePrediction({ actions: [action] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 0 }));
+  const suggestion = { id: 'skill:test', confidence: 1 };
+  const value = { suggestions: [suggestion], actions: [action] };
+  const actionsOnly = validatePrediction(value, catalog, [], { actionPrediction: true });
+  assert.deepEqual(actionsOnly.suggestions, []);
+  assert.deepEqual(actionsOnly.actions, [action]);
+  const capabilitiesOnly = validatePrediction(value, catalog, [], { capabilityPrediction: true });
+  assert.deepEqual(capabilitiesOnly.actions, []);
+  assert.equal(capabilitiesOnly.suggestions.length, 1);
+  assert.deepEqual(capabilitiesOnly.dropped, [{ kind: 'field', reason: 'unknown-field', item: 'actions' }]);
+  const disabled = validatePrediction(value, catalog, []);
+  assert.deepEqual(disabled.suggestions, []);
+  assert.deepEqual(disabled.actions, []);
 });
 
 test('file tree is bounded during traversal and respects nested ignores; Skill index stops at entry files', async () => {
@@ -133,6 +166,29 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(child.buildSessionContext().messages.filter(m => m.role === 'toolResult').length, 2);
     assert.ok(result.diagnostics.totalMs >= result.diagnostics.inferenceMs);
     assert.equal(result.diagnostics.endReason, 'actions-complete');
+
+    // Mixed valid/invalid output must reach dispatch without losing valid work.
+    const validValue = value, traceEvents = [];
+    value = { suggestions: [...value.suggestions, { id: 'unknown', confidence: 1 }], actions: [
+      { tool: 'read', arguments: { path: '/outside' } },
+      { tool: 'bash', command: 'must not execute' }, ...value.actions,
+    ] };
+    const partial = await runPrefetch({ ...args, trace: (event, data) => traceEvents.push({ event, ...data }) });
+    assert.equal(partial.prefetch.failure, undefined);
+    assert.equal(partial.suggestions.length, 1);
+    assert.equal(partial.prefetch.rounds.length, 2);
+    assert.equal(partial.diagnostics.dropped.length, 3);
+    assert.deepEqual(traceEvents.find(e => e.event === 'drop').dropped, partial.diagnostics.dropped);
+    const partialChild = sdk.SessionManager.open(partial.diagnostics.childSession.file);
+    assert.deepEqual(partialChild.getEntries().find(e => e.customType === 'capability-recommendation-outcome').data.dropped,
+      partial.diagnostics.dropped);
+    const failed = await runPrefetch({ ...args, ctx: { ...ctx, modelRegistry: { ...registry,
+      streamSimple: async () => { throw new Error('fixture transport unavailable'); } } },
+      trace: (event, data) => traceEvents.push({ event, ...data }) });
+    assert.equal(failed.prefetch.failure, 'prediction-error');
+    assert.equal(typeof traceEvents.findLast(e => e.event === 'failure').error, 'string');
+    assert.ok(traceEvents.findLast(e => e.event === 'failure').error.length);
+    value = validValue;
 
     const initialValue = value;
     expectedLimit = 0;
@@ -263,8 +319,9 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
 
     value = { suggestions: [], actions: [{ tool: 'bash', arguments: { command: 42 } }] };
     const bad = await runPrefetch(args);
-    assert.equal(bad.prefetch.failure, 'prediction-error'); assert.equal(bad.prefetch.rounds.length, 0);
-    assert.match(await readFile(bad.diagnostics.childSession.file, 'utf8'), /prediction-error/, 'invalid prediction is retained as evidence, not executed');
+    assert.equal(bad.prefetch.failure, undefined); assert.equal(bad.prefetch.rounds.length, 0);
+    assert.equal(bad.diagnostics.dropped[0].reason, 'invalid-action');
+    assert.match(await readFile(bad.diagnostics.childSession.file, 'utf8'), /invalid-action/, 'invalid prediction is retained as evidence, not executed');
 
     const cancelled = await runPrefetch({ ...args, rules: 'SETUP RULE EVIDENCE', signal: AbortSignal.abort() });
     assert.equal(cancelled.diagnostics.endReason, 'cancelled-or-timeout');
@@ -310,12 +367,14 @@ test('live IQ3 through the full discovery entry includes configured MCP metadata
         mcpWait: () => assert.fail('metadata-only recommendation must not wait for MCP') });
       const append = hook.pi.appendEntry;
       hook.pi.appendEntry = (type, data) => { append(type, data); parent.appendCustomEntry(type, data); };
-      const output = await hook.handlers.before_agent_start({ prompt: query, systemPromptOptions: { skills, sections: {} } },
-        { cwd: process.cwd(), modelRegistry: new sdk.ModelRegistry(runtime), sessionManager: parent,
-          ui: { notify: (...args) => console.log('live warning', ...args) } });
+      const ctx = { cwd: process.cwd(), modelRegistry: new sdk.ModelRegistry(runtime), sessionManager: parent,
+        ui: { notify: (...args) => console.log('live warning', ...args) } };
+      await hook.handlers.before_agent_start({ prompt: query, systemPromptOptions: { skills, sections: {} } }, ctx);
+      await hook.handlers.context({ messages: parent.buildSessionContext().messages }, ctx);
+      const output = { message: hook.sent.at(-1)?.message };
       const result = hook.diagnostics.findLast(r => r.data.event === 'complete').data;
-      const calls = output?.message.details.prefetch.rounds.flatMap(r => r.messages[0].content) ?? [];
-      if (output?.message) parent.appendCustomMessageEntry(output.message.customType, output.message.content, false, output.message.details);
+      const calls = output?.message?.details.prefetch.rounds.flatMap(r => r.messages[0].content) ?? [];
+      if (output.message) parent.appendCustomMessageEntry(output.message.customType, output.message.content, false, output.message.details);
       console.log(JSON.stringify({ query, ...result, calls }));
       assert.equal(result.failure, undefined); assert.equal(result.requests, 1);
       assert.ok(result.capabilities.mcp > 0);
@@ -353,13 +412,24 @@ test('thinking settings validate independently and preserve all supported levels
   }
 });
 
-test('preparation rejects warnings even when trajectory review is enabled', () => {
+test('malformed predictions degrade per item; warnings never enter preparation output', () => {
+  assert.deepEqual(validatePrediction(null, [], []), { suggestions: [], actions: [], dropped: [{ kind: 'response', reason: 'not-an-object' }] });
   for (const trajectoryWarnings of [true, false]) {
-    assert.throws(() => validatePrediction({ suggestions: [], actions: [], warnings: [] }, [], [],
-      { capabilityPrediction: true, actionPrediction: true, trajectoryWarnings }));
+    const result = validatePrediction({ suggestions: [], actions: [], warnings: [] }, [], [],
+      { capabilityPrediction: true, actionPrediction: true, trajectoryWarnings });
+    assert.deepEqual(result, { suggestions: [], actions: [], dropped: [{ kind: 'field', reason: 'unknown-field', item: 'warnings' }] });
   }
-  assert.throws(() => validatePrediction({ suggestions: [{ id: 'unknown', confidence: 1 }] }, [], [], { capabilityPrediction: true }));
-  assert.throws(() => validatePrediction({ actions: [{ tool: 'read', arguments: { path: '/outside' } }] }, [], [], { actionPrediction: true }));
+  const missing = validatePrediction({ suggestions: [{ id: 'unknown', confidence: 1 }] }, [], [], { capabilityPrediction: true, actionPrediction: true });
+  assert.deepEqual(missing.suggestions, []);
+  assert.deepEqual(missing.dropped.filter(d => d.reason === 'invalid-capability').length, 1);
+  assert.deepEqual(missing.dropped.filter(d => d.reason === 'missing-field' && d.kind === 'action').length, 1);
+  const outside = validatePrediction({ actions: [{ tool: 'read', arguments: { path: '/outside' } }] }, [], [], { actionPrediction: true });
+  assert.deepEqual(outside.actions, []);
+  assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'read', arguments: { path: '/outside' } } }]);
+  const malformed = validatePrediction({ suggestions: 'all skills', actions: 42 }, [], [], { capabilityPrediction: true, actionPrediction: true });
+  assert.deepEqual(malformed.suggestions, []);
+  assert.deepEqual(malformed.actions, []);
+  assert.deepEqual(malformed.dropped.map(d => [d.kind, d.reason]).sort(), [['action', 'not-an-array'], ['suggestion', 'not-an-array']]);
 });
 
 test('warning trigger settings are strict and independent', () => {

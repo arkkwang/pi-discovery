@@ -35,10 +35,27 @@ for (let mask = 0; mask < 4; mask++) test(`dynamic prompts and strict output fie
   assert.deepEqual(schema.required, enabled);
   assert.deepEqual(Object.keys(schema.properties), enabled);
   for (const field of ['suggestions', 'actions', 'warnings']) assert.equal(systemPrompt.includes({ suggestions: '## Capability suggestions', actions: '## Preparation actions', warnings: '## Trajectory warnings' }[field]), enabled.includes(field));
+  if (options.actionPrediction) {
+    assert.match(systemPrompt, /verbatim/);
+    assert.match(systemPrompt, /never absolute paths|Never convert/);
+  }
+  assert.doesNotMatch(systemPrompt, /\{"suggestions":\[/);
+  if (options.capabilityPrediction) assert.match(input, /\{"suggestions":\[/);
+  else assert.doesNotMatch(input, /\{"suggestions":\[/);
   const response = Object.fromEntries(enabled.map(key => [key, []]));
-  assert.deepEqual(validatePrediction(response, catalog, files, options), { suggestions: [], actions: [] });
-  for (const key of enabled) { const missing = { ...response }; delete missing[key]; assert.throws(() => validatePrediction(missing, catalog, files, options)); }
-  for (const key of ['suggestions', 'actions', 'warnings'].filter(key => !enabled.includes(key))) assert.throws(() => validatePrediction({ ...response, [key]: [] }, catalog, files, options));
+  assert.deepEqual(validatePrediction(response, catalog, files, options), { suggestions: [], actions: [], dropped: [] });
+  for (const key of enabled) {
+    const missing = { ...response }; delete missing[key];
+    const result = validatePrediction(missing, catalog, files, options);
+    assert.deepEqual(result.suggestions, []);
+    assert.deepEqual(result.actions, []);
+    assert.deepEqual(result.dropped, [{ kind: key === 'suggestions' ? 'suggestion' : 'action', reason: 'missing-field' }]);
+  }
+  for (const key of ['suggestions', 'actions', 'warnings'].filter(key => !enabled.includes(key))) {
+    const result = validatePrediction({ ...response, [key]: [] }, catalog, files, options);
+    assert.ok(!result.suggestions.length && !result.actions.length);
+    assert.deepEqual(result.dropped, [{ kind: 'field', reason: 'unknown-field', item: key }]);
+  }
 });
 
 test('schemas have no dynamic IDs/paths or budgets; host checks still own validity', () => {

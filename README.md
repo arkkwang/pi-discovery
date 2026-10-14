@@ -31,20 +31,51 @@ Trajectory-related features additionally require pi-snap **≥0.5.0** on `PATH` 
 ```json
 {
   "capabilityDiscovery": {
-    "provider": "zai-coding-cn",
-    "model": "glm-5.3-flash",
-    "capabilityPrediction": true,
-    "actionPrediction": true,
-    "trajectoryWarnings": true,
-    "trajectoryWarningEverySteps": 15,
-    "maxSuggestedActions": 3,
-    "autoRecommendThinkingLevel": "low",
-    "toolSearchThinkingLevel": "medium"
+    "recommendation": {
+      "model": "zai-coding-cn/glm-5.3-flash",
+      "capabilityPrediction": true,
+      "actionPrediction": true,
+      "maxSuggestedActions": 3,
+      "thinkingLevel": "low",
+      "toolSearchThinkingLevel": "medium",
+      "timeoutMs": 60000
+    },
+    "trajectory": {
+      "model": "zai-coding-cn/glm-5.3-flash",
+      "enabled": true,
+      "everySteps": 15,
+      "thinkingLevel": "low",
+      "timeoutMs": 120000
+    }
   }
 }
 ```
 
-Write it to Pi's `settings.json`. The defaults differ from the explicit configuration above: all three features default to off, the model defaults to `llama/iq3`, the period defaults to 5, the action cap defaults to 3, and both thinking levels default to `medium`. Legacy keys (`trajectoryWarningOnUserInput`, `autoRecommend`, nested `prefetch`, and other unknown keys) are not accepted and cause the entire `capabilityDiscovery` configuration to be rejected.
+Write it to Pi's `settings.json`. `capabilityDiscovery` accepts **only two top-level keys**: `recommendation` and `trajectory`. Their models, thinking levels, and switches are independent; neither inherits settings from the other. Omitted groups use their own defaults.
+
+### Available configuration keys
+
+All keys are optional. This table lists every supported key and its default.
+
+| Stage | Key | Default | Purpose / range |
+| --- | --- | --- | --- |
+| recommendation | `model` | `"llama/iq3"` | `provider/model` for capability/action prediction and semantic `tool_search` |
+| recommendation | `capabilityPrediction` | `false` | Automatically recommend capabilities; boolean |
+| recommendation | `actionPrediction` | `false` | Predict and execute preparation actions; boolean |
+| recommendation | `maxSuggestedActions` | `3` | Actions per preparation; integer 0–8, 0 executes none |
+| recommendation | `thinkingLevel` | `"medium"` | Thinking level for automatic capability/action prediction |
+| recommendation | `toolSearchThinkingLevel` | `"medium"` | Thinking level for explicit semantic search |
+| recommendation | `timeoutMs` | `60000` | Preparation boundary budget in ms; integer 1000–600000 |
+| trajectory | `model` | `"llama/iq3"` | `provider/model` for periodic trajectory warnings |
+| trajectory | `enabled` | `false` | Enable periodic trajectory warnings; boolean |
+| trajectory | `everySteps` | `5` | Warning interval; integer 0–1000, 0 disables periodic review |
+| trajectory | `thinkingLevel` | `"medium"` | Thinking level for trajectory warnings |
+| trajectory | `timeoutMs` | `60000` | Review boundary budget in ms; integer 1000–600000 |
+
+- `model` must be a nonempty `provider/model` string without whitespace. Only the first `/` separates the provider, so model IDs such as `vendor/model` are supported. The model must be configured in Pi; currently only `openai-completions` APIs are supported.
+- All three thinking-level fields accept `off/minimal/low/medium/high/xhigh/max`. Mapping depends on the selected model, independently of the main session's thinking level.
+- The example keeps both stages on the same model to preserve the previous configuration's intent; change either independently. `tool_search` belongs to recommendation, not a third model stage; disabling automatic prediction does not disable manual search.
+- **The old flat format is rejected, not automatically migrated.** Combine `provider` + `model` into each group's `model`; move capability/action switches and the action cap into recommendation; split `autoRecommendThinkingLevel` into each group's `thinkingLevel`; move `toolSearchThinkingLevel` into recommendation. Rename `trajectoryWarnings` to `trajectory.enabled` and `trajectoryWarningEverySteps` to `trajectory.everySteps`. Legacy keys, wrong nesting, unknown keys, and invalid values fail explicitly rather than being silently ignored.
 
 | Entry point | Invocation and input | Output |
 | --- | --- | --- |
@@ -53,10 +84,9 @@ Write it to Pi's `settings.json`. The defaults differ from the explicit configur
 | Manual `tool_search` | Natural-language queries use independent semantic search; exact names/lists need no model | Capability suggestions and actual load results |
 
 - A step is an SDK `turn_end`: one assistant round and its tool executions completed; parallel tool batches count as one step. New user input resets the counter. Review happens every time N steps are reached, without first guessing whether there are problems; no error/risk pre-filtering is added. Cancelled calls are not dispatched.
-- `trajectoryWarningEverySteps` is an integer from 0–1000; 0 disables the period. `trajectoryWarnings=false` also disables the review, but does not affect the initial capability/action prediction.
-- `maxSuggestedActions` is an integer from 0–8. When actions are disabled or the budget is 0, the project tree is not scanned and no actions are executed.
-- Automatic preparation and periodic review use `autoRecommendThinkingLevel`; manual search uses `toolSearchThinkingLevel`. Supported values are `off/minimal/low/medium/high/xhigh/max`; mapping is decided by the model and is not affected by the main session's thinking level.
-- Each trigger makes at most one model request, sharing that trigger's 60-second budget; no automatic retry/compaction. Periodic reminders enter the next naturally occurring main model request, without forcing a continuation and without being interrupted into an approval gate.
+- `trajectory.everySteps` is an integer from 0–1000; 0 disables the period. `trajectory.enabled=false` also disables the review, but does not affect the initial capability/action prediction.
+- `recommendation.maxSuggestedActions` is an integer from 0–8. When actions are disabled or the budget is 0, the project tree is not scanned and no actions are executed.
+- Each trigger makes at most one model request within its stage's `timeoutMs` budget (default 60 s); no automatic retry/compaction. Periodic reminders enter the next naturally occurring main model request, without forcing a continuation and without being interrupted into an approval gate. Every boundary leaves a consolidated outcome entry in the main session log — success, `no-warnings` or failure — naming its own session and the child transcript; the child's outcome entry mirrors the linkage back to the parent session, so either JSONL alone shows both ends.
 - Recommendations are not execution authorization, and structural validation cannot guarantee the model's semantic accuracy.
 
 ## Periodic review: helping do work well, completely, and correctly
@@ -84,7 +114,8 @@ Each item is exactly two non-empty strings: `[where it deviated and what to do, 
 
 The isolated SDK session does not load user extensions, MCP, project instructions, or tools. The model only selects suggestions; the host then executes the allowed `read`/Bash; results are not sent back to the prediction model. The preparation feature does not perform trajectory review.
 
-- The capability catalog contains Skills, MCP, and deferred/codemode tools; hidden tools are not included; it does not wait for MCP readiness and does not auto-activate. The main model loads them on demand via `tool_search`.
+- The capability catalog contains Skills, MCP (including host-declared pending services), and deferred/codemode tools; hidden tools are not included; it does not wait for MCP readiness and does not auto-activate. The main model loads them on demand via `tool_search`.
+- When capability prediction is enabled, request/setup failures, internal timeouts, invalid responses, or entirely invalid capability items deliver an unranked full catalog with `fallback: "full-catalog"` and `routingError` to the main model context and persisted preparation message. There is no retry/model switch and fallback adds no reads or actions; existing valid actions and their results are retained. Valid empty suggestions are not a failure; partially valid suggestions are kept with drop diagnostics, and action-only failures do not trigger capability fallback. Disabled capability prediction, caller cancellation, and session changes do not inject a fallback catalog.
 - A Skill's name, full description, and SKILL.md path are placed in the same entry; at most the entry file is read automatically, and internal reference materials are selected by the main agent.
 - Project indexing is breadth-first, capped at 3 levels / 200 entries / 6000 characters / 2000 visited entries / 100 ms; it respects the local `.gitignore`, skips hidden directories, dependency/build directories, and credential names, and does not follow directory symlinks. Omission does not prove absence.
 - Project files use `project:<relative-path>`; Skills use real paths inside their directories. Before reading, candidate paths, real directory scope, text type, and size are re-checked: 50,000 bytes per file, 100,000 bytes in total.
@@ -117,12 +148,12 @@ Parent JSONL entries with `customType: capability-prefetch-diagnostic` index the
 | --- | --- |
 | `input` | Full `configuredOptions`, whether preparation is scheduled, and `resetFromSteps` before the new input resets the counter |
 | `gate` | Each completed round's review decision: `due`, `below-interval`, `disabled`, `zero-interval`, `cancelled`, or `invalid-settings`, with `steps` and `interval` |
-| `start` | `configuredOptions` versus path-local `effectiveOptions`; preparation disabling trajectory review does not mean the global switch is off |
+| `start` | Both groups in `configuredOptions` and the current stage in `effectiveOptions`; preparation receives recommendation only, periodic review receives trajectory only |
 | `session` / `review-input` | Child session location and review input sources, character counts and trajectory truncation; exact input and raw model output remain in the child JSONL |
 | `complete` / `failure` | Requests, actions, timing and failures; review distinguishes `warnings`, `no-warnings` and `failed` |
 | `context-ready` | First context-hook delivery: `direct` injection, already in `history`, `removed-from-context` without revival, or `no-message`; includes projected tool-call IDs |
 
-Use `pi-snap SESSION --only customType:capability-prefetch-diagnostic` to locate diagnostics, then `pi-snap SESSION ENTRY --json` for their fields. ENTRY accepts a displayed record number or original ID. Follow `childSession.file` / `id` for full inference evidence. Actual preparation arguments/results live in `capability-prefetch.details.prefetch.rounds[].messages`: their epoch-millisecond timestamps describe actions, while the parent timestamp may describe deferred persistence. Do not infer execution order from the carrier's position alone.
+Use `pi-snap SESSION --only customType:capability-prefetch-diagnostic` to locate diagnostics, then `pi-snap SESSION ENTRY --json` for their fields. ENTRY accepts a displayed record number or original ID. Follow `discoverySessionFile` / `discoverySessionId` for full inference evidence. Actual preparation arguments/results live in `capability-prefetch.details.prefetch.rounds[].messages`: their epoch-millisecond timestamps describe actions, while the parent timestamp may describe deferred persistence. Do not infer execution order from the carrier's position alone.
 
 Evidence limits: `context-ready` proves this extension returned context, not provider receipt or model compliance; later host processing may change the request. Review currently receives system instructions, the current request, Skill descriptions and a bounded trajectory, not full retained Skill bodies or tool-result bodies; `review-input` makes this coverage explicit. No warning is not authorization. Missing events in older logs do not establish global settings or skip reasons; process crashes and logging failures may also leave incomplete attempts.
 
@@ -137,10 +168,12 @@ Real Pi SDK isolated tests replace external models with a fake provider / fake r
 {"query":"skill:engineering-practice"}
 {"query":"mcp:mcp__playwright"}
 {"query":"notify"}
-{"query":"*","limit":100}
+{"query":"*"}
 ```
 
-Natural-language queries get semantic recommendations based on the full description, then native search is invoked within the selected scope; exact names ignore case, with `skill:`/`mcp:`/`tool:` disambiguation. `*` only lists the catalog, without inference/loading. Original tool parameters are preserved; limit defaults to 8, and there is no offset. Returns `mode/total/suggestions/loaded/availableTools`; already-loaded tools are not activated again, and Skills require reading their body content. confidence is an uncalibrated, model self-assessed relevance, not an execution threshold. On model failure, it returns an explicit `routingError` and attempts native search, instead of faking a complete no-match result.
+Natural-language queries get semantic recommendations based on the full description, then native search is invoked within the selected scope; exact names ignore case, with `skill:`/`mcp:`/`tool:` disambiguation. `*` lists the complete catalog without inference/loading. Original tool parameters are preserved; limit defaults to 8, and there is no offset. The limit truncates normal recommendations/exact matches, but not `*` or failure fallback (a supplied limit must still be a positive integer). Returns `mode/total/suggestions/loaded/availableTools`; already-loaded tools are not activated again, and Skills require reading their body content. confidence is an uncalibrated, model self-assessed relevance, not an execution threshold.
+
+A routing request failure (such as HTTP 429, network error, internal timeout, or unavailable model/authentication) or invalid result immediately falls back to the unranked full catalog, retaining Skill entry paths, with all confidence values null, `fallback: "full-catalog"`, and `routingError`. The mode remains semantic; the directory is usable, so the entire result is not marked isError. Fallback does not invoke native search, load tools, retry, or switch models; use an exact name to load needed tools afterwards. Valid `suggestions: []` means no match, not failure, and can still attempt native search as before. Manual routing retains strict per-item validation: any invalid item fails that selection; prefetch instead keeps partially valid suggestions. Listing does not imply activation or execution authorization; caller cancellation propagates rather than becoming fallback success.
 
 ## Verification
 

@@ -1,6 +1,6 @@
 import { createInternalSession, requestModel } from './model-request.js';
 import { buildTrajectoryPrompts, trajectorySchema } from './prompts.js';
-import { recommendationOptions } from './prefetch.js';
+import { trajectoryOptions } from './config.js';
 
 export function validateTrajectory(value) {
   if (!Array.isArray(value) || value.some(item => !Array.isArray(item) || item.length !== 2
@@ -12,18 +12,18 @@ export function validateTrajectory(value) {
 // actions or MCP catalog. The fixed interval, not a guessed problem, triggers it.
 export async function runTrajectoryReview({ sdk, ctx, options, trajectory, skills, systemPrompt, userPrompt,
   signal, trace = () => {} }) {
-  options = recommendationOptions(options);
+  options = trajectoryOptions(options);
   const start = performance.now();
   const prompts = buildTrajectoryPrompts({ trajectory, skills, systemPrompt, userPrompt });
   const manager = createInternalSession(sdk, ctx, 'trajectory', options);
-  const childSession = { id: manager.getSessionId(), file: manager.getSessionFile() };
+  const discoverySessionId = manager.getSessionId(), discoverySessionFile = manager.getSessionFile();
   manager.appendCustomEntry('trajectory-review-origin', {
     parentSessionId: ctx.sessionManager?.getSessionId?.(), parentSessionFile: ctx.sessionManager?.getSessionFile?.(),
     parentLeafId: ctx.sessionManager?.getLeafId?.(),
   });
-  trace('session', { childSession });
+  trace('session', { discoverySessionId, discoverySessionFile });
   trace('review-input', {
-    // Exact submitted text is saved in childSession; these sizes/sources explain
+    // Exact submitted text is saved in the discovery child session; these sizes/sources explain
     // evidence coverage without duplicating private prompts in the parent log.
     sources: ['system-instructions', 'current-user-request', 'skill-descriptions', 'bounded-trajectory'],
     skillBodiesIncluded: false, toolResultBodiesIncluded: false,
@@ -43,7 +43,9 @@ export async function runTrajectoryReview({ sdk, ctx, options, trajectory, skill
       manager.appendMessage({ role: 'user', content: prompts.input, timestamp: Date.now() });
     }
   }
-  const diagnostics = { childSession, requests, inferenceMs, totalMs: Math.round(performance.now() - start),
+  const diagnostics = {
+    parentSessionId: ctx.sessionManager?.getSessionId?.(), parentSessionFile: ctx.sessionManager?.getSessionFile?.(),
+    discoverySessionId, discoverySessionFile, requests, inferenceMs, totalMs: Math.round(performance.now() - start),
     ...(failure ? { failure } : {}) };
   manager.appendCustomEntry('trajectory-review-outcome', diagnostics);
   return { warnings, diagnostics, ...(failure ? { failure } : {}) };

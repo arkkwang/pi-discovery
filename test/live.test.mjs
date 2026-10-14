@@ -59,7 +59,7 @@ test('live IQ3 routing: original failure, cross-language tasks and no-match boun
   registerDiscovery({ on: (name, fn) => { handlers[name] = fn; }, registerTool: value => { tool = value; },
     appendEntry: (type, data) => diagnostics.push({ type, data }),
     sendMessage: message => sent.push(message),
-    getSettings: () => ({ capabilityDiscovery: { capabilityPrediction: autoRecommend, maxSuggestedActions: 0 } }), getActiveTools: () => active, setActiveTools: names => { active = names; },
+    getSettings: () => ({ capabilityDiscovery: { recommendation: { capabilityPrediction: autoRecommend, maxSuggestedActions: 0 } } }), getActiveTools: () => active, setActiveTools: names => { active = names; },
     getAllTools: () => [...deferred, ...namespaces.map(namespace => ({ description: namespace.description, parameters: { type: 'object', properties: {} }, name: `${namespace.name}__fixture`, exposure: 'deferred', namespace }))],
   }, { sdk: { ...hostSdk, SessionManager: isolatedSessions(hostSdk, temp), ModelRuntime: { create: async () => runtime } }, createToolSearchExtension, createMcpExtension: () => pi => pi.on('before_agent_start', () => {}) });
   await handlers.before_agent_start({ systemPromptOptions: { skills, sections: {} } });

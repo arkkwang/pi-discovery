@@ -96,15 +96,14 @@ async function createHarness({ capabilityDiscovery, mainScript, predictResult })
 
 test('user input prepares capabilities/actions and never includes trajectory warnings', { skip: !sdkRoot || snapCliMissing, timeout: 120000 }, async () => {
   const h = await createHarness({
-    capabilityDiscovery: { provider: 'fixturepi', model: 'iq3', capabilityPrediction: true,
-      actionPrediction: true, trajectoryWarnings: true, trajectoryWarningEverySteps: 0 },
+    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', capabilityPrediction: true, actionPrediction: true }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 0 } },
     mainScript: [{ text: 'Prediction acknowledged.' }],
     predictResult: () => ({ suggestions: [{ type: 'skill', name: 'demo-skill', confidence: 0.9 }], warnings: [warning('input')] }),
   });
   try {
     await h.session.prompt('Please use demo-skill for the task');
     assert.equal(h.predicts.length, 1, `one predict for the user input: ${h.diagnostics()}`);
-    assert.equal(h.predicts[0].options.trajectoryWarnings, false);
+    assert.equal(h.predicts[0].options.enabled, undefined);
     for (const key of ['capabilityPrediction', 'actionPrediction'])
       assert.equal(h.predicts[0].options[key], true, `${key} enabled in the shared predict`);
     assert.ok(h.predicts[0].catalog.some(c => c.type === 'skill' && c.name === 'demo-skill'),
@@ -120,14 +119,23 @@ test('user input prepares capabilities/actions and never includes trajectory war
     const input = diagnostics.find(e => e.data.event === 'input');
     const ready = diagnostics.find(e => e.data.event === 'context-ready');
     const start = diagnostics.find(e => e.data.event === 'start');
-    assert.equal(input.data.configuredOptions.trajectoryWarnings, true);
-    assert.equal(start.data.effectiveOptions.trajectoryWarnings, false);
+    assert.equal(input.data.configuredOptions.trajectory.enabled, true);
+    assert.equal(start.data.effectiveOptions.enabled, undefined);
     assert.equal(ready.data.inputId, input.data.inputId);
     assert.equal(ready.data.preparationId, prefetch[0].details.preparationId);
     assert.equal(ready.data.delivery, 'direct');
     const firstAssistant = branch.find(e => e.type === 'message' && e.message.role === 'assistant');
     assert.ok(branch.indexOf(ready) < branch.indexOf(firstAssistant), 'hook delivery is recorded before the main response');
     assert.equal(diagnostics.find(e => e.data.event === 'gate').data.reason, 'zero-interval');
+    const outcomes = branch.filter(e => e.type === 'custom' && e.customType === 'capability-recommendation-outcome');
+    assert.equal(outcomes.length, 1, 'one consolidated preparation outcome in the parent log');
+    assert.equal(outcomes[0].data.trigger, 'user-input');
+    assert.equal(outcomes[0].data.parentSessionId, h.sessionManager.getSessionId(),
+      'the parent outcome entry names its own session');
+    assert.equal(outcomes[0].data.outcome, 'completed');
+    assert.equal(outcomes[0].data.suggestionCount, 1);
+    assert.deepEqual(outcomes[0].data.suggestions, ['skill:demo-skill']);
+    assert.equal(outcomes[0].data.attempt, start.data.attempt, 'outcome correlates with its boundary attempt');
     assert.ok(h.predicts[0].ctx.sessionManager.getSessionFile, 'predict runs with the real runner context');
     // The persisted message is part of the provider-visible context of the main request.
     assert.match(h.main[0], /demo-skill/);
@@ -139,8 +147,7 @@ test('user input prepares capabilities/actions and never includes trajectory war
 
 test('turn_end periodic warning: one predict per completed round, persisted, visible, no forced continuation', { skip: !sdkRoot || snapCliMissing, timeout: 120000 }, async () => {
   const h = await createHarness({
-    capabilityDiscovery: { provider: 'fixturepi', model: 'iq3', capabilityPrediction: false,
-      actionPrediction: false, trajectoryWarnings: true, trajectoryWarningEverySteps: 1 },
+    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', capabilityPrediction: false, actionPrediction: false }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 1 } },
     mainScript: [{ toolCall: true }, { text: 'All done.' }],
     predictResult: () => ({ warnings: [warning(`round-${h.predicts.length}`)] }),
   });
@@ -149,9 +156,9 @@ test('turn_end periodic warning: one predict per completed round, persisted, vis
     assert.equal(h.main.length, 2, 'exactly two main provider requests (tool call round, then final answer)');
     assert.equal(h.predicts.length, 2, `one predict per completed assistant+tools round: ${h.diagnostics()}`);
     for (const p of h.predicts) {
-      assert.equal(p.options.capabilityPrediction, false);
-      assert.equal(p.options.actionPrediction, false);
-      assert.equal(p.options.trajectoryWarnings, true, 'periodic review keeps warnings on');
+      assert.equal(p.options.capabilityPrediction, undefined);
+      assert.equal(p.options.actionPrediction, undefined);
+      assert.equal(p.options.enabled, true, 'periodic review keeps warnings on');
       assert.ok(p.skills.some(s => s.name === 'demo-skill'));
       assert.ok(p.skills.every(s => s.type === 'skill'));
       assert.equal(p.catalog, undefined);
@@ -178,6 +185,16 @@ test('turn_end periodic warning: one predict per completed round, persisted, vis
     assert.ok(warns[1] > final, 'second warning is committed after the final assistant message');
     assert.match(branch[warns[0]].content, /Rule-round-1/);
     assert.match(branch[warns[1]].content, /Rule-round-2/);
+    const outcomes = branch.filter(e => e.type === 'custom' && e.customType === 'capability-trajectory-outcome');
+    assert.equal(outcomes.length, 2, 'each review leaves one consolidated outcome entry');
+    for (const [i, outcome] of outcomes.entries()) {
+      assert.equal(outcome.data.trigger, 'periodic');
+      assert.equal(outcome.data.parentSessionId, h.sessionManager.getSessionId());
+      assert.equal(outcome.data.outcome, 'warnings');
+      assert.equal(outcome.data.warningCount, 1);
+      assert.deepEqual(outcome.data.warnings, [warning(`round-${i + 1}`)], 'warning content is preserved in the parent log');
+      assert.ok(outcome.data.attempt);
+    }
     // No forced continuation: the run settled on the stop answer and the session file has both warnings.
     const last = branch.filter(e => e.type === 'message' && e.message.role === 'assistant').at(-1).message;
     assert.equal(last.stopReason, 'stop');
@@ -189,8 +206,7 @@ test('turn_end periodic warning: one predict per completed round, persisted, vis
 
 test('everySteps interval defers the periodic predict to the second completed round', { skip: !sdkRoot || snapCliMissing, timeout: 120000 }, async () => {
   const h = await createHarness({
-    capabilityDiscovery: { provider: 'fixturepi', model: 'iq3', capabilityPrediction: false,
-      actionPrediction: false, trajectoryWarnings: true, trajectoryWarningEverySteps: 2 },
+    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', capabilityPrediction: false, actionPrediction: false }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 2 } },
     mainScript: [{ toolCall: true }, { text: 'Finished.' }],
     predictResult: () => ({ warnings: [warning('later')] }),
   });
@@ -227,36 +243,43 @@ test('trajectory review persists to the normal sessions tree; title, origin and 
       streamSimple: async () => streamOf(model, [{ type: 'text', text: 'not a json array' }], 'stop') },
       sessionManager: parent };
     const failed = await runTrajectoryReview({ sdk: fixtureSdk, ctx,
-      options: { provider: 'fixturepi', model: 'iq3', trajectoryWarnings: true, autoRecommendThinkingLevel: 'off' },
+      options: { model: 'fixturepi/iq3', enabled: true, thinkingLevel: 'off' },
       ...scenario, signal: AbortSignal.timeout(30000) });
     assert.equal(failed.failure, 'prediction-error');
-    assert.equal(path.dirname(failed.diagnostics.childSession.file), internalDir,
+    assert.equal(path.dirname(failed.diagnostics.discoverySessionFile), internalDir,
       'trajectory transcripts persist in the isolated sessions tree');
-    assert.ok(path.isAbsolute(failed.diagnostics.childSession.file), 'parent diagnostics carry an absolute child path');
-    assert.ok(path.basename(failed.diagnostics.childSession.file).endsWith(`_${failed.diagnostics.childSession.id}.jsonl`),
+    assert.ok(path.isAbsolute(failed.diagnostics.discoverySessionFile), 'parent diagnostics carry an absolute child path');
+    assert.ok(path.basename(failed.diagnostics.discoverySessionFile).endsWith(`_${failed.diagnostics.discoverySessionId}.jsonl`),
       'SDK default timestamp_ID.jsonl naming is preserved');
-    const failedChild = sdk.SessionManager.open(failed.diagnostics.childSession.file);
-    assert.equal(failedChild.getSessionName(), `pi-discovery · trajectory · fixturepi/iq3 · ${failed.diagnostics.childSession.id}`);
+    const failedChild = sdk.SessionManager.open(failed.diagnostics.discoverySessionFile);
+    assert.equal(failedChild.getSessionName(), `pi-discovery · trajectory · fixturepi/iq3 · ${failed.diagnostics.discoverySessionId}`);
     const origin = failedChild.getEntries().find(e => e.customType === 'trajectory-review-origin');
     assert.equal(origin.data.parentSessionId, parent.getSessionId());
     assert.equal(origin.data.parentSessionFile, parent.getSessionFile());
     assert.equal(origin.data.parentLeafId, parent.getLeafId());
-    assert.match(await readFile(failed.diagnostics.childSession.file, 'utf8'), /Check the fixture/,
+    assert.match(await readFile(failed.diagnostics.discoverySessionFile, 'utf8'), /Check the fixture/,
       'failed review retains the submitted input as evidence');
 
     ctx.modelRegistry = { find: () => model,
       streamSimple: async () => streamOf(model, [{ type: 'text', text: JSON.stringify([warning('persist')] ) }], 'stop') };
     const ok = await runTrajectoryReview({ sdk: fixtureSdk, ctx,
-      options: { provider: 'fixturepi', model: 'iq3', trajectoryWarnings: true, autoRecommendThinkingLevel: 'off' },
+      options: { model: 'fixturepi/iq3', enabled: true, thinkingLevel: 'off' },
       ...scenario, signal: AbortSignal.timeout(30000) });
     assert.equal(ok.failure, undefined);
     assert.deepEqual(ok.warnings, [warning('persist')]);
-    assert.notEqual(ok.diagnostics.childSession.file, failed.diagnostics.childSession.file);
-    assert.notEqual(ok.diagnostics.childSession.id, failed.diagnostics.childSession.id);
+    assert.notEqual(ok.diagnostics.discoverySessionFile, failed.diagnostics.discoverySessionFile);
+    assert.notEqual(ok.diagnostics.discoverySessionId, failed.diagnostics.discoverySessionId);
     assert.ok((await readdir(internalDir)).length >= 2, 'each run leaves its own transcript');
-    const outcome = sdk.SessionManager.open(ok.diagnostics.childSession.file).getEntries()
+    const outcome = sdk.SessionManager.open(ok.diagnostics.discoverySessionFile).getEntries()
       .find(e => e.customType === 'trajectory-review-outcome');
     assert.equal(outcome.data.failure, undefined);
+    assert.equal(outcome.data.parentSessionId, parent.getSessionId(),
+      'review outcome entry names the session it reviewed for');
+    assert.equal(outcome.data.parentSessionFile, parent.getSessionFile());
+    assert.equal(outcome.data.discoverySessionId, ok.diagnostics.discoverySessionId);
+    const failedOutcome = failedChild.getEntries().find(e => e.customType === 'trajectory-review-outcome');
+    assert.equal(failedOutcome.data.parentSessionId, parent.getSessionId(),
+      'failed review outcomes keep the parent linkage too');
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
@@ -265,7 +288,7 @@ test('acceptance and session persistence precede a 10s recommendation; main mode
   const gate = new Promise(r => { release = r; });
   const started = new Promise(r => { entered = r; });
   const h = await createHarness({
-    capabilityDiscovery: { capabilityPrediction: true },
+    capabilityDiscovery: { recommendation: { capabilityPrediction: true } },
     mainScript: [{ toolCall: true }, { text: 'Done after tools.' }],
     predictResult: async () => { entered(); await gate; return { suggestions: [{ type: 'skill', name: 'AFTER_ACCEPTANCE', confidence: 1 }] }; },
   });
@@ -296,7 +319,7 @@ test('cancelled preparation cannot inject late results into the next input', { s
   const started = new Promise(r => { entered = r; });
   let n = 0;
   const h = await createHarness({
-    capabilityDiscovery: { capabilityPrediction: true }, mainScript: [{ text: 'Next accepted.' }],
+    capabilityDiscovery: { recommendation: { capabilityPrediction: true } }, mainScript: [{ text: 'Next accepted.' }],
     predictResult: async () => {
       const first = ++n === 1;
       if (first) { entered(); await gate; }
@@ -313,6 +336,11 @@ test('cancelled preparation cannot inject late results into the next input', { s
     assert.equal(h.main.length, 1);
     assert.match(h.main[0], /CURRENT_RESULT/);
     assert.doesNotMatch(h.main[0], /STALE_CANCELLED_RESULT/);
-    assert.doesNotMatch(JSON.stringify(h.sessionManager.getBranch()), /STALE_CANCELLED_RESULT/);
+    // The cancelled result must not enter any message record; the consolidated outcome
+    // entry is a diagnostic custom entry and deliberately keeps the evidence instead.
+    const projected = h.sessionManager.getBranch().filter(e => e.type === 'message' || e.type === 'custom_message');
+    assert.doesNotMatch(JSON.stringify(projected), /STALE_CANCELLED_RESULT/);
+    const outcome = h.sessionManager.getBranch().find(e => e.type === 'custom' && e.customType === 'capability-recommendation-outcome');
+    assert.equal(outcome.data.suggestions[0], 'skill:STALE_CANCELLED_RESULT');
   } finally { release(); await h.dispose(); }
 });

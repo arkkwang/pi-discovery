@@ -1,7 +1,8 @@
+import { recommendationOptions } from '../config.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildPredictionPrompts, predictionSchema, buildTrajectoryPrompts, trajectorySchema } from '../prompts.js';
-import { recommendationOptions, validatePrediction } from '../prefetch.js';
+import { validatePrediction } from '../prefetch.js';
 import { preparationContext } from '../trajectory.js';
 
 const catalog = [{ type: 'skill', name: 'method', description: 'METHOD-DATA', path: '/skills/method/SKILL.md' },

@@ -14,7 +14,7 @@ test('native session listing discovers preparation and trajectory under one stab
   process.env.PI_CODING_AGENT_DIR = agentDir;
   try {
     for (const kind of ['preparation', 'trajectory']) {
-      const manager = createInternalSession(sdk, { cwd: '/not-the-prediction-cwd' }, kind, { provider: 'fixture', model: 'model' });
+      const manager = createInternalSession(sdk, { cwd: '/not-the-prediction-cwd' }, kind, { model: 'fixture/model' });
       manager.appendMessage({ role: 'user', content: 'storage fixture', timestamp: Date.now() });
       manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: '[]' }], timestamp: Date.now() });
       assert.equal(manager.getCwd(), path.join(tmpdir(), 'pi-discovery'));

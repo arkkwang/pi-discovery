@@ -2,12 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { sdkDepDir } from './helpers.mjs';
 
 const sdkRoot = process.env.PI_DISCOVERY_SDK_ROOT;
-test('real Pi loader/runner renders short catalog with default and custom SYSTEM prompts', { skip: !sdkRoot }, async () => {
+test('real Pi loader/runner renders short catalog with default and custom SYSTEM prompts', { skip: !sdkRoot }, async t => {
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', async () => { requests++; return new Response('fixture rate limit', { status: 429 }); });
   const sdk = suffix => import(pathToFileURL(path.join(sdkRoot, 'dist', suffix)).href);
   const { loadExtensions } = await sdk('core/extensions/loader.js');
   const { ExtensionRunner } = await sdk('core/extensions/runner.js');
@@ -33,7 +35,7 @@ test('real Pi loader/runner renders short catalog with default and custom SYSTEM
     for (const customPrompt of [undefined, 'Custom SYSTEM.md content']) {
       const input = { cwd, skills, selectedTools: ['read', 'tool_search'], customPrompt, sections: { mcp_servers: 'Existing MCP directory' } };
       assert.match(buildSystemPrompt(input), /unique-test-skill/);
-      const { systemPromptOptions } = await runner.emitBeforeAgentStart('unmatched-request', undefined, input);
+      const { systemPromptOptions } = await runner.emitBeforeAgentStart({ messageType: 'user', prompt: 'unmatched-request' }, input);
       const rendered = buildSystemPrompt(systemPromptOptions);
       assert.match(rendered, /unique-test-skill — 图片创作短说明/);
       assert.doesNotMatch(rendered, /Unique searchable|Secret body/);
@@ -41,7 +43,7 @@ test('real Pi loader/runner renders short catalog with default and custom SYSTEM
       assert.match(rendered, /tool_search/);
       assert.doesNotMatch(rendered, /<mcp_servers>|Existing MCP directory|pi_discovery/);
       if (customPrompt) assert.match(rendered, /Custom SYSTEM.md content/);
-      const matched = await runner.emitBeforeAgentStart('图片', undefined, input);
+      const matched = await runner.emitBeforeAgentStart({ messageType: 'user', prompt: '图片' }, input);
       const recommendation = buildSystemPrompt(matched.systemPromptOptions);
       assert.match(recommendation, /unique-test-skill/);
       assert.doesNotMatch(recommendation, /Secret body/);
@@ -52,6 +54,22 @@ test('real Pi loader/runner renders short catalog with default and custom SYSTEM
       assert.equal(result.details.suggestions[0].path, skills[0].filePath);
       assert.equal(result.details.suggestions[0].description, skills[0].description);
       assert.doesNotMatch(JSON.stringify(result), /Secret body/);
+      const beforeFallback = [...active], beforeRequests = requests;
+      const fallback = await tool.execute('fallback', { query: 'semantic task', limit: 1 }, undefined, undefined, {
+        modelRegistry: { find: () => ({ id: 'fixture', api: 'openai-completions', baseUrl: 'http://fixture.invalid' }),
+          getApiKeyAndHeaders: async () => ({ ok: true }) },
+      });
+      assert.equal(fallback.details.fallback, 'full-catalog');
+      assert.match(fallback.details.routingError, /HTTP 429/);
+      assert.equal(fallback.details.suggestions.length, 2);
+      assert.ok(fallback.details.suggestions.every(c => c.confidence === null));
+      const entryPath = fallback.details.suggestions.find(c => c.type === 'skill').path;
+      assert.match(await readFile(entryPath, 'utf8'), /Secret body only loaded through read/);
+      assert.deepEqual(fallback.details.loaded, []);
+      assert.deepEqual(active, beforeFallback, 'real host active tools are unchanged by fallback');
+      assert.equal(requests, beforeRequests + 1);
+      const list = await tool.execute('list', { query: '*', limit: 1 });
+      assert.equal(list.details.suggestions.length, 2);
       const mcp = await tool.execute('mcp', { query: 'mcp__test' });
       assert.ok(active.includes('mcp__test__inspect'));
       assert.deepEqual(mcp.details.suggestions[0], { type: 'mcp', name: 'mcp__test', description: 'Inspect test data', confidence: null });
@@ -66,7 +84,7 @@ test('real MCP factory waits for pending discovery, preserves schema identity an
   const sdk = suffix => import(pathToFileURL(path.join(sdkRoot, 'dist', suffix)).href);
   const { createMcpExtension } = await sdk('extensions/mcp/index.js');
   const { createToolSearchExtension } = await sdk('extensions/tool-search/index.js');
-  const { isToolSearchTool } = await sdk('extensions/tool-search/tool.js');
+  const { toolSearchSchema } = await sdk('extensions/tool-search/tool.js');
   const { registerDiscovery } = await import('../discovery.js');
   const { createInMemoryTransportPair } = await import(pathToFileURL(path.join(sdkDepDir(sdkRoot, '@earendil-works/pi-mcp'), 'dist/testing/index.js')).href);
   const cwd = await mkdtemp(path.join(tmpdir(), 'unified-mcp-'));
@@ -108,8 +126,8 @@ test('real MCP factory waits for pending discovery, preserves schema identity an
     assert.match(options.sections.available_capabilities, /mcp__test: Test namespace/);
     assert.equal(options.sections.mcp_servers, undefined);
     const tool = tools.get('tool_search');
-    assert.ok(isToolSearchTool(tool));
-    assert.ok(!isToolSearchTool({ ...tool, parameters: structuredClone(tool.parameters) }));
+    assert.equal(tool.parameters, toolSearchSchema);
+    assert.equal(tool.reachesTools({ query: 'mcp__test' }), 'all', 'preserve native MCP readiness metadata');
     let ready = false;
     const waiting = emit('tool_call', { toolName: 'tool_search', input: { query: 'mcp__test' } }).then(() => { ready = true; });
     await listRequested;
@@ -140,8 +158,8 @@ test('resource loader replaces both built-ins once; settings and request additio
   const { convertResponsesMessages } = await ai('api/openai-responses-shared.js');
   const cwd = await mkdtemp(path.join(tmpdir(), 'unified-loader-'));
   try {
-    const settingsManager = SettingsManager.inMemory({ capabilityDiscovery: { capabilityPrediction: true }, packages: [] });
-    assert.equal(settingsManager.getSettings().capabilityDiscovery.capabilityPrediction, true);
+    const settingsManager = SettingsManager.inMemory({ capabilityDiscovery: { recommendation: { capabilityPrediction: true } }, packages: [] });
+    assert.equal(settingsManager.getSettings().capabilityDiscovery.recommendation.capabilityPrediction, true);
     const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager,
       noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       additionalExtensionPaths: [fileURLToPath(new URL('../index.js', import.meta.url))],

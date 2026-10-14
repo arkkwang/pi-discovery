@@ -1,26 +1,14 @@
 import { createInternalSession, requestModel } from './model-request.js';
+import { fullCatalogFallback } from './catalog.js';
 import { buildPredictionPrompts, predictionSchema, predictionFields } from './prompts.js';
 import path from 'node:path';
 import { readPathKey } from './trajectory.js';
-import { thinkingLevel } from './router.js';
+import { parseModel, recommendationOptions } from './config.js';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { inside, projectIndex, secretName, skillFileIndex } from './context-index.js';
 
 export const PREFETCH_TYPE = 'capability-prefetch';
-export function recommendationOptions(value = {}) {
-  const keys = ['provider', 'model', 'capabilityPrediction', 'actionPrediction', 'trajectoryWarnings', 'trajectoryWarningEverySteps', 'maxSuggestedActions', 'autoRecommendThinkingLevel', 'toolSearchThinkingLevel'];
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !keys.includes(k))) throw new Error(`capabilityDiscovery accepts only ${keys.join(', ')}`);
-  const result = { provider: 'llama', model: 'iq3', capabilityPrediction: false, actionPrediction: false, trajectoryWarnings: false, trajectoryWarningEverySteps: 5, maxSuggestedActions: 3, ...value };
-  for (const key of ['provider', 'model']) if (typeof result[key] !== 'string' || !result[key].trim()) throw new Error(`${key} must be a nonempty string`);
-  for (const key of ['capabilityPrediction', 'actionPrediction', 'trajectoryWarnings']) if (typeof result[key] !== 'boolean') throw new Error(`${key} must be boolean`);
-  if (!Number.isInteger(result.trajectoryWarningEverySteps) || result.trajectoryWarningEverySteps < 0 || result.trajectoryWarningEverySteps > 1000) throw new Error('trajectoryWarningEverySteps must be an integer 0–1000');
-  if (!Number.isInteger(result.maxSuggestedActions) || result.maxSuggestedActions < 0 || result.maxSuggestedActions > 8) throw new Error('maxSuggestedActions must be an integer 0–8');
-  return { ...result,
-    autoRecommendThinkingLevel: thinkingLevel(value.autoRecommendThinkingLevel, 'autoRecommendThinkingLevel'),
-    toolSearchThinkingLevel: thinkingLevel(value.toolSearchThinkingLevel, 'toolSearchThinkingLevel') };
-}
-
 // Persist actual execution records, project standard tool messages, never replay tools.
 export function projectPrefetch(messages) {
   const present = new Set(messages.filter(m => m.role === 'toolResult').map(m => m.toolCallId));
@@ -126,18 +114,19 @@ export async function runPrefetch({ sdk, query, catalog, ctx, options, signal, r
     suggestions: [], prefetch: { version: 2, requests: 0, reads: 0, rounds: [] },
     diagnostics: { endReason: 'disabled', totalMs: 0, inferenceMs: 0, requests: 0, actions: [], skipped: [] },
   };
-  const label = `${options.provider}/${options.model}`;
-  const model = ctx.modelRegistry.find(options.provider, options.model);
+  const label = options.model;
+  const selected = parseModel(label);
+  const model = ctx.modelRegistry.find(selected.provider, selected.id);
   if (!model) throw new Error(`${label} is not configured`);
   if (model.api !== 'openai-completions') throw new Error(`${label}: only openai-completions is supported`);
   const manager = createInternalSession(sdk, ctx, 'preparation', options);
-  const childSession = { id: manager.getSessionId(), file: manager.getSessionFile() };
+  const discoverySessionId = manager.getSessionId(), discoverySessionFile = manager.getSessionFile();
   manager.appendCustomEntry('capability-recommendation-origin', {
     parentSessionId: ctx.sessionManager?.getSessionId?.(), parentSessionFile: ctx.sessionManager?.getSessionFile?.(),
     parentLeafId: ctx.sessionManager?.getLeafId?.(), options,
   });
-  trace('session', { childSession });
-  let prediction = { suggestions: [], actions: [] }, failure;
+  trace('session', { discoverySessionId, discoverySessionFile });
+  let prediction = { suggestions: [], actions: [] }, failure, routingError, predictionCompleted = false;
   let input = `## Current task and recent trajectory
 ${query}`;
   let requests = 0, inferenceMs = 0, bytes = 0, tree;
@@ -155,6 +144,11 @@ ${query}`;
     const value = await requestModel({ sdk, ctx, options, manager, prompts, schema, signal, trace,
       onRequest: () => { requests++; }, onInference: ms => { inferenceMs = ms; } });
     prediction = validatePrediction(value, catalog, files, options);
+    predictionCompleted = true;
+    if (options.capabilityPrediction && !prediction.suggestions.length
+      && prediction.dropped.some(d => d.kind === 'response' || d.kind === 'suggestion')) {
+      routingError = 'Capability prediction returned invalid suggestions (no valid capabilities).';
+    }
     if (prediction.dropped.length) trace('drop', { dropped: prediction.dropped });
     manager.appendCustomEntry('capability-action-dispatch', { actor: 'host', actions: prediction.actions });
     for (const action of prediction.actions) {
@@ -211,6 +205,9 @@ ${query}`;
     }
   } catch (error) {
     failure = signal?.aborted ? 'cancelled-or-timeout' : requests ? 'prediction-error' : 'setup-error';
+    if (options.capabilityPrediction && !predictionCompleted) {
+      routingError = `Capability prediction failed: ${String(error?.message ?? error)}`;
+    }
     trace('failure', { cause: failure, ...(signal?.aborted ? {} : { error: String(error?.message ?? error) }) });
   } finally {
     // SDK flushes on first user/assistant record. Keep submitted input on setup failure.
@@ -218,13 +215,19 @@ ${query}`;
       manager.appendMessage({ role: 'user', content: input, timestamp: Date.now() });
     }
   }
-  const endReason = failure ?? (rounds.some(r => r.messages[1].isError) ? 'action-error' : rounds.length ? 'actions-complete' : 'no-actions-needed');
-  const diagnostics = { childSession, endReason, totalMs: Math.round(performance.now() - start), inferenceMs,
+  const endReason = failure ?? (routingError ? 'invalid-capabilities'
+    : rounds.some(r => r.messages[1].isError) ? 'action-error' : rounds.length ? 'actions-complete' : 'no-actions-needed');
+  const fallback = routingError && !signal?.aborted ? fullCatalogFallback(catalog, routingError) : undefined;
+  const diagnostics = {
+    parentSessionId: ctx.sessionManager?.getSessionId?.(), parentSessionFile: ctx.sessionManager?.getSessionFile?.(),
+    discoverySessionId, discoverySessionFile, endReason, ...(routingError ? { routingError } : {}),
+    ...(fallback ? { fallback: fallback.fallback } : {}), totalMs: Math.round(performance.now() - start), inferenceMs,
     requests: Math.min(requests, 1), actions: actionTimings, skipped,
     ...(prediction.dropped?.length ? { dropped: prediction.dropped } : {}),
     capabilities: Object.fromEntries(['skill', 'mcp', 'tool'].map(type => [type, catalog.filter(c => c.type === type).length])), tree: tree && { elapsedMs: tree.elapsedMs, entries: tree.entries.length,
       visited: tree.visited, truncated: tree.truncated, reason: tree.reason } };
   manager.appendCustomEntry('capability-recommendation-outcome', diagnostics);
-  return { suggestions: prediction.suggestions, prefetch: { version: 2, requests: Math.min(requests, 1),
+  return { suggestions: prediction.suggestions, ...(routingError ? { routingError } : {}), ...fallback,
+    prefetch: { version: 2, requests: Math.min(requests, 1),
     reads: actionTimings.filter(a => a.tool === 'read').length, rounds, ...(failure ? { failure } : {}) }, diagnostics };
 }

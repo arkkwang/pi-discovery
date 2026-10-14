@@ -11,7 +11,7 @@ import { runPrefetch } from '../prefetch.js';
 import { runTrajectoryReview } from '../observer.js';
 const root = process.env.PI_DISCOVERY_SDK_ROOT;
 const enabled = root && process.env.PI_DISCOVERY_OBSERVER_LIVE === '1';
-const modelOptions = { provider: 'zai-coding-cn', model: 'glm-5.3-flash', autoRecommendThinkingLevel: 'low' };
+const modelOptions = { model: 'zai-coding-cn/glm-5.3-flash', thinkingLevel: 'low' };
 const scenarios = [
   {
     name: 'skipped-prerequisite',
@@ -50,10 +50,10 @@ for (const scenario of scenarios) test(`live review: ${scenario.name}`, { skip: 
     const result = await runTrajectoryReview({ sdk: { ...sdk, SessionManager: isolatedSessions(sdk, path.join(cwd, 'agent')), getAgentDir: () => path.join(cwd, 'agent') },
       ctx: { cwd, modelRegistry: new sdk.ModelRegistry(runtime),
       sessionManager: sdk.SessionManager.create(cwd, path.join(cwd, 'sessions')) },
-      options: { ...modelOptions, trajectoryWarnings: true }, skills: [{ type: 'skill', name: 'engineering-design',
+      options: { ...modelOptions, enabled: true }, skills: [{ type: 'skill', name: 'engineering-design',
         description: '解决技术疑点，设计架构、数据、接口和迁移方案。', path: '/skills/engineering-design/SKILL.md' }],
       ...scenario, signal: AbortSignal.timeout(60000) });
-    const child = sdk.SessionManager.open(result.diagnostics.childSession.file);
+    const child = sdk.SessionManager.open(result.diagnostics.discoverySessionFile);
     const answer = child.getBranch().filter(e => e.type === 'message' && e.message.role === 'assistant').at(-1)?.message;
     console.log(JSON.stringify({ scenario: scenario.name, model: modelOptions, ...result, answer }));
     assert.equal(result.failure, undefined);

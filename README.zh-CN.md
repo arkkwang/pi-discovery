@@ -31,20 +31,51 @@ pi install .
 ```json
 {
   "capabilityDiscovery": {
-    "provider": "zai-coding-cn",
-    "model": "glm-5.3-flash",
-    "capabilityPrediction": true,
-    "actionPrediction": true,
-    "trajectoryWarnings": true,
-    "trajectoryWarningEverySteps": 15,
-    "maxSuggestedActions": 3,
-    "autoRecommendThinkingLevel": "low",
-    "toolSearchThinkingLevel": "medium"
+    "recommendation": {
+      "model": "zai-coding-cn/glm-5.3-flash",
+      "capabilityPrediction": true,
+      "actionPrediction": true,
+      "maxSuggestedActions": 3,
+      "thinkingLevel": "low",
+      "toolSearchThinkingLevel": "medium",
+      "timeoutMs": 60000
+    },
+    "trajectory": {
+      "model": "zai-coding-cn/glm-5.3-flash",
+      "enabled": true,
+      "everySteps": 15,
+      "thinkingLevel": "low",
+      "timeoutMs": 120000
+    }
   }
 }
 ```
 
-写入 Pi 的 `settings.json`。缺省值与显式配置不同：三个功能缺省关闭，模型缺省 `llama/iq3`，周期缺省 5，动作上限缺省 3，两种思考级别缺省均为 `medium`。旧键（`trajectoryWarningOnUserInput`、`autoRecommend`、嵌套 `prefetch` 及其他未知键）不被接受，会让整份 `capabilityDiscovery` 配置被拒绝。
+写入 Pi 的 `settings.json`。`capabilityDiscovery` **只接受两个顶层键**：`recommendation` 与 `trajectory`。两阶段的模型、思考级别与开关相互独立，不继承另一阶段的设置；省略任一阶段时使用该阶段的默认值。
+
+### 可用配置键
+
+所有键均可省略；下表列出全部可用键与默认值。
+
+| 阶段 | 键 | 默认值 | 用途 / 范围 |
+| --- | --- | --- | --- |
+| recommendation | `model` | `"llama/iq3"` | 能力/动作预测与 `tool_search` 语义搜索共用的 `provider/model` |
+| recommendation | `capabilityPrediction` | `false` | 是否自动推荐能力，布尔值 |
+| recommendation | `actionPrediction` | `false` | 是否自动预测并执行准备动作，布尔值 |
+| recommendation | `maxSuggestedActions` | `3` | 每次准备动作上限，整数 0–8；0 不执行动作 |
+| recommendation | `thinkingLevel` | `"medium"` | 自动能力/动作预测的思考级别 |
+| recommendation | `toolSearchThinkingLevel` | `"medium"` | 显式语义搜索的思考级别 |
+| recommendation | `timeoutMs` | `60000` | 准备阶段的预算（毫秒），整数 1000–600000 |
+| trajectory | `model` | `"llama/iq3"` | 周期轨迹预警使用的 `provider/model` |
+| trajectory | `enabled` | `false` | 是否启用周期轨迹预警，布尔值 |
+| trajectory | `everySteps` | `5` | 预警间隔，整数 0–1000；0 关闭周期 |
+| trajectory | `thinkingLevel` | `"medium"` | 轨迹预警的思考级别 |
+| trajectory | `timeoutMs` | `60000` | 审查阶段的预算（毫秒），整数 1000–600000 |
+
+- `model` 必须是非空 `provider/model` 字符串，不含空白；按第一个 `/` 分割，支持 `provider/vendor/model` 这类带 `/` 的模型 ID。模型须已在 Pi 中配置，当前仅支持 `openai-completions` API。
+- 三个思考级别字段均支持 `off/minimal/low/medium/high/xhigh/max`，实际映射取决于所选模型，不受主会话思考级别影响。
+- 示例让两阶段使用同一模型以保留原配置意图；可以分别改成不同模型。`tool_search` 属于 recommendation 阶段，不是第三个模型配置阶段；即使关闭自动预测，手动搜索仍可使用该模型。
+- **旧平铺格式不再接受，也不自动迁移。** 将 `provider` + `model` 合并为每组的 `model`；能力/动作开关与动作上限移入 recommendation，`autoRecommendThinkingLevel` 拆为两组各自的 `thinkingLevel`，`toolSearchThinkingLevel` 移入 recommendation；`trajectoryWarnings` 改为 `trajectory.enabled`，`trajectoryWarningEverySteps` 改为 `trajectory.everySteps`。旧键、错误层级、未知键或无效值会明确报错，不会静默忽略。
 
 | 入口 | 调用与输入 | 输出 |
 | --- | --- | --- |
@@ -53,10 +84,9 @@ pi install .
 | 手动 `tool_search` | 自然语言查询使用独立语义搜索；精确名称/列表无需模型 | 能力建议及实际加载结果 |
 
 - 一步是 SDK `turn_end`：一轮 Assistant 及其工具执行完毕；并行工具批次算一步。新用户输入重置计数。每到 N 步就审查，不先猜测有没有问题；不添加错误/风险预筛选。已取消的调用不派发。
-- `trajectoryWarningEverySteps` 为 0–1000 整数，0 关闭周期。`trajectoryWarnings=false` 同样关闭审查，但不影响开头的能力/动作预测。
-- `maxSuggestedActions` 为 0–8 整数。动作关闭或预算为 0 时不扫描项目树、不执行动作。
-- 自动准备与周期审查使用 `autoRecommendThinkingLevel`；手动搜索用 `toolSearchThinkingLevel`。支持 `off/minimal/low/medium/high/xhigh/max`，映射由模型决定，不受主会话思考级别影响。
-- 每次触发最多一次模型请求，共享该触发的 60 秒预算；无自动重试/压缩。周期提醒进入下一次自然发生的主模型请求，不强制续跑、不中断成审批门禁。
+- `trajectory.everySteps` 为 0–1000 整数，0 关闭周期。`trajectory.enabled=false` 同样关闭审查，但不影响开头的能力/动作预测。
+- `recommendation.maxSuggestedActions` 为 0–8 整数。动作关闭或预算为 0 时不扫描项目树、不执行动作。
+- 每次触发最多一次模型请求，在各阶段自己的 `timeoutMs` 预算（默认 60 秒）内完成；无自动重试/压缩。周期提醒进入下一次自然发生的主模型请求，不强制续跑、不中断成审批门禁。每个边界无论成功、无警告还是失败，都会在主会话日志留下一条汇总 outcome 记录，标明自身会话与子会话；子会话的 outcome 条目也回携父会话 ID，两边任一 JSONL 都能看到双向关联。
 - 推荐不是执行授权，结构校验也不能保证模型语义准确。
 
 ## 周期审查：帮助做好、做完、做对
@@ -84,7 +114,8 @@ pi install .
 
 隔离 SDK session 不加载用户扩展、MCP、项目指令或工具。模型仅选择建议，宿主随后执行允许的 `read`/Bash；结果不再送回预测模型。准备功能不进行轨迹审查。
 
-- 能力目录含 Skill、MCP 与 deferred/codemode 工具，hidden 工具不进入；不等待 MCP 就绪、不自动激活。主模型按需用 `tool_search` 加载。
+- 能力目录含 Skill、MCP（包括宿主声明的待就绪服务）与 deferred/codemode 工具，hidden 工具不进入；不等待 MCP 就绪、不自动激活。主模型按需用 `tool_search` 加载。
+- 开启能力预测时，请求/初始化失败、内部超时、非法响应或全部能力项无效，会把无相关性排序的全量目录及 `fallback: "full-catalog"`、`routingError` 送入主模型上下文并保存在预取消息中。不重试/换模型，不因回退追加读取或执行动作；已有合法行动及其结果仍保留。合法空建议不算失败，部分能力项有效则保留有效项并记录丢弃原因，单独行动失败不触发能力回退。能力预测关闭、用户取消或会话切换不注入回退目录。
 - Skill 的名称、完整 description、SKILL.md 路径放在同一条目；最多自动读入口，内部参考资料由主 Agent 选择。
 - 项目索引广度优先，最多 3 层/200 条/6000 字符/2000 访问条目、100 ms；尊重局部 `.gitignore`，跳过隐藏目录、依赖/构建目录和凭据名，不跟随目录符号链接。遗漏不证明不存在。
 - 项目文件使用 `project:<relative-path>`，Skill 使用目录内真实路径。读取前复查候选路径、真实目录范围、文本类型与大小：单文件 50,000 字节、总量 100,000 字节。
@@ -117,12 +148,12 @@ pi install .
 | --- | --- |
 | `input` | 当次 `configuredOptions` 总配置、预取是否安排、用户新输入清零前的 `resetFromSteps` |
 | `gate` | 每轮结束为何审查或跳过：`due` / `below-interval` / `disabled` / `zero-interval` / `cancelled` / `invalid-settings`，以及当前 `steps`、`interval` |
-| `start` | 总配置 `configuredOptions` 与当前路径 `effectiveOptions`；预取路径关闭轨迹审查不表示总开关关闭 |
+| `start` | 两组总配置 `configuredOptions` 与当前阶段 `effectiveOptions`；预取只带 recommendation，周期审查只带 trajectory，不再混用另一阶段字段 |
 | `session` / `review-input` | 子会话路径及审查输入来源、字符数和轨迹截断情况；完整实际输入与原始模型输出在子 JSONL |
 | `complete` / `failure` | 请求、动作、耗时、失败；审查明确区分 `warnings`、`no-warnings` 和 `failed` |
 | `context-ready` | 首次上下文钩子交出预取结果：`direct` 直接注入、`history` 已在上下文、`removed-from-context` 不复活已移除内容、`no-message` 无预取载体；含投影工具调用 ID |
 
-用 `pi-snap SESSION --only customType:capability-prefetch-diagnostic` 定位诊断记录，再用 `pi-snap SESSION ENTRY --json` 看字段；ENTRY 可用输出序号或原始 ID。`childSession.file` / `id` 指向完整推理证据。实际执行参数/结果保存在 `capability-prefetch.details.prefetch.rounds[].messages`，其数字毫秒时间是动作时间，父记录时间可能是延后落盘时间。不要用父记录的排列位置判断预取是否晚于主执行。
+用 `pi-snap SESSION --only customType:capability-prefetch-diagnostic` 定位诊断记录，再用 `pi-snap SESSION ENTRY --json` 看字段；ENTRY 可用输出序号或原始 ID。`discoverySessionFile` / `discoverySessionId` 指向完整推理证据。实际执行参数/结果保存在 `capability-prefetch.details.prefetch.rounds[].messages`，其数字毫秒时间是动作时间，父记录时间可能是延后落盘时间。不要用父记录的排列位置判断预取是否晚于主执行。
 
 证据边界：`context-ready` 只证明本扩展交出的上下文，不证明 provider 已接收或模型遵守；后续宿主处理仍可能改变请求。审查当前只接收系统指令、当前用户请求、Skill 描述及有界轨迹，不含完整已读 Skill 正文或工具结果正文；`review-input` 明示这一覆盖范围。不把审查无提醒等同于操作已获授权。旧日志缺少这些新增事件时，不反推总配置或未触发原因；进程崩溃、日志写入失败也可能留下未完成的 attempt。
 
@@ -137,10 +168,12 @@ pi install .
 {"query":"skill:engineering-practice"}
 {"query":"mcp:mcp__playwright"}
 {"query":"notify"}
-{"query":"*","limit":100}
+{"query":"*"}
 ```
 
-自然语言按完整 description 语义推荐，再在选中范围内调用原生搜索；精确名称忽略大小写，`skill:`/`mcp:`/`tool:` 消歧。`*` 只列目录，不推理/加载。保留原工具参数，limit 缺省 8，无 offset。返回 `mode/total/suggestions/loaded/availableTools`；已加载工具不重复激活，Skill 需读正文。confidence 是未校准的模型自评相关度，不是执行门槛。模型失败明确给 `routingError` 并尝试原生搜索，不冒充完整无匹配结果。
+自然语言按完整 description 语义推荐，再在选中范围内调用原生搜索；精确名称忽略大小写，`skill:`/`mcp:`/`tool:` 消歧。`*` 只列完整目录，不推理/加载。保留原工具参数，limit 缺省 8，无 offset；limit 仅截断正常推荐/精确匹配，`*` 与失败回退不受其截断（传入值仍须为正整数）。返回 `mode/total/suggestions/loaded/availableTools`；已加载工具不重复激活，Skill 需读正文。confidence 是未校准的模型自评相关度，不是执行门槛。
+
+路由请求失败（如 HTTP 429、网络错误、内部超时、模型/鉴权不可用）或返回非法结果时，直接降级为无相关性排序的全量目录，保留 Skill 正文路径，所有 confidence 为 null，并返回 `fallback: "full-catalog"` 和 `routingError`。mode 仍为 semantic，目录可用，不将整个结果标为 isError。回退不调用原生搜索、不加载工具、不换模型重试；需要工具时再用精确名称加载。合法 `suggestions: []` 是无匹配，不算失败，仍可按原逻辑尝试原生搜索。手动路由维持严格逐项验证，任一非法项使本次路由失败；预取则保留部分有效项。列出能力不代表已加载，也不授予执行权限；调用方取消直接取消，不转为降级成功。
 
 ## 验证
 

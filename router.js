@@ -1,17 +1,12 @@
 import { renderCapabilities } from './prompts.js';
-export function thinkingLevel(value = 'medium', key = 'thinkingLevel') {
-  if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value)) {
-    throw new Error(`${key} must be off, minimal, low, medium, high, xhigh or max`);
-  }
-  return value;
-}
+import { thinkingLevel, parseModel, recommendationOptions } from './config.js';
 
 // One classification request. Only IDs/scores come from the model.
 export async function routeCapabilities(query, catalog, registry, signal, thinking = 'medium', options = {}) {
   thinkingLevel(thinking);
-  const { provider = 'llama', model: modelId = 'iq3' } = options;
-  const label = `${provider}/${modelId}`;
-  const model = registry?.find(provider, modelId);
+  const label = recommendationOptions(options).model;
+  const selectedModel = parseModel(label);
+  const model = registry?.find(selectedModel.provider, selectedModel.id);
   if (!model) throw new Error(`${label} is not configured.`);
   if (model.api !== 'openai-completions') throw new Error(`${label}: only openai-completions is supported.`);
   const auth = await registry.getApiKeyAndHeaders(model);
@@ -49,10 +44,14 @@ export async function routeCapabilities(query, catalog, registry, signal, thinki
     }),
   });
   if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}.`);
-  const data = await response.json();
-  const choice = data.choices?.[0];
+  let data;
+  try { data = await response.json(); }
+  catch { requestSignal.throwIfAborted(); throw new Error(`${label} returned invalid JSON.`); }
+  const choice = data?.choices?.[0];
   if (choice?.finish_reason !== 'stop') throw new Error(`${label} did not complete its selection.`);
-  const selected = JSON.parse(choice.message.content);
+  let selected;
+  try { selected = JSON.parse(choice.message.content); }
+  catch { throw new Error(`${label} returned invalid JSON.`); }
   if (!selected || Object.keys(selected).length !== 1 || !Array.isArray(selected.suggestions)) {
     throw new Error(`${label} returned invalid suggestions.`);
   }

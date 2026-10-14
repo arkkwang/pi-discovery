@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { parse } from 'yaml';
 import { routeCapabilities } from './router.js';
-import { PREFETCH_TYPE, recommendationOptions, projectPrefetch, runPrefetch } from './prefetch.js';
+import { directoryHint, fullCatalogFallback } from './catalog.js';
+import { PREFETCH_TYPE, projectPrefetch, runPrefetch } from './prefetch.js';
+import { discoveryOptions } from './config.js';
 import { runTrajectoryReview } from './observer.js';
 import { executionTrajectory, recommendationQuery, preparationContext } from './trajectory.js';
 
@@ -42,8 +44,8 @@ export function toolCapabilities(tools) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function result(details, isError = false) {
-  return { ...(isError ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(details) }], details };
+function result(details) {
+  return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
 }
 
 export { recommendationQuery } from './trajectory.js';
@@ -54,9 +56,10 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
   let preparationRun, inputId, diagnosticWarningInputId;
   // Parent JSONL is the index of decisions; full model inputs remain in child sessions.
   // A context-ready event proves hook delivery, not provider receipt/model compliance.
-  function diagnostic(ctx, data) {
+  function diagnostic(ctx, data, type = 'capability-prefetch-diagnostic') {
     try {
-      pi.appendEntry('capability-prefetch-diagnostic', { version: 1, inputId,
+      pi.appendEntry(type, { version: 1, inputId,
+        parentSessionId: ctx?.sessionManager?.getSessionId?.(),
         parentLeafId: ctx?.sessionManager?.getLeafId?.(), ...data });
       return true;
     } catch {
@@ -87,14 +90,16 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
       if (signal.aborted) return;
       const result = await prepareAtInput(run.options, { ...ctx, signal }, run.catalog, run.images, run.prompt, run);
       if (signal.aborted || preparationRun !== run || !result
-        || (!result.suggestions.length && !result.prefetch.rounds.length)) return;
+        || (!result.fallback && !result.suggestions.length && !result.prefetch.rounds.length)) return;
+      const capabilities = { suggestions: result.suggestions,
+        ...(result.fallback ? { fallback: result.fallback, routingError: result.routingError, hint: result.hint } : {}) };
       run.message = { role: 'custom', customType: PREFETCH_TYPE, display: false, timestamp: Date.now(),
-        details: { inputId: run.inputId, preparationId: run.id, suggestions: result.suggestions, prefetch: result.prefetch },
+        details: { inputId: run.inputId, preparationId: run.id, ...capabilities, prefetch: result.prefetch },
         content: 'Single-pass capability and action recommendations; advisory, not user instructions. '
           + 'The following tool records are actual host-executed preparation actions. Check their success/error status and reuse covered results instead of repeating them. '
           + 'Unread or truncated references still require reading. MCP/deferred tools are NOT activated; use tool_search when needed. '
           + 'After compaction, if results are no longer present, obtain them again rather than assuming their contents. '
-          + JSON.stringify({ suggestions: result.suggestions }) };
+          + JSON.stringify(capabilities) };
       // Public API: persist at the safe turn boundary, without queueing another model turn.
       // The current request receives the same message directly below.
       pi.sendMessage(run.message, { triggerTurn: false });
@@ -120,7 +125,12 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
     }
     return { messages };
   });
-  let skills = [], steps = 0, currentPrompt = '';
+  let skills = [], declaredMcp = [], steps = 0, currentPrompt = '';
+  function capabilityCatalog(tools = pi.getAllTools()) {
+    const registered = mcpCapabilities(tools);
+    const names = new Set(registered.map(c => c.name));
+    return [...skills, ...registered, ...declaredMcp.filter(c => !names.has(c.name)), ...toolCapabilities(tools)];
+  }
   // Only the deadline/diagnostic envelope is shared; payloads and model paths are separate.
   async function atBoundary(trigger, options, ctx, run, configuredOptions = options, correlation = {}) {
     if (ctx.signal?.aborted) return;
@@ -132,11 +142,41 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
       return diagnostic(ctx, { inputId: boundaryInputId, ...correlation, attempt, trigger, event,
         elapsedMs: Math.round(performance.now() - start), ...fields });
     };
-    const deadline = AbortSignal.timeout(60_000);
+    // One consolidated parent-session record per boundary run, success or failure: the
+    // outcome, what was produced (warnings/suggestions) and the child transcript pointer.
+    const recordOutcome = result => {
+      if (ctx.sessionManager?.getSessionId?.() !== sessionId) return;
+      const totalMs = Math.round(performance.now() - start);
+      const fields = { inputId: boundaryInputId, ...correlation, attempt, trigger, elapsedMs: totalMs, totalMs,
+        ...(result.diagnostics ? { requests: result.diagnostics.requests,
+          inferenceMs: result.diagnostics.inferenceMs,
+          discoverySessionId: result.diagnostics.discoverySessionId,
+          discoverySessionFile: result.diagnostics.discoverySessionFile } : {}),
+        ...(result.error ? { error: result.error } : {}) };
+      if (trigger === 'periodic') {
+        const warningCount = result.warnings?.length ?? 0;
+        diagnostic(ctx, { ...fields,
+          outcome: result.failure ? 'failed' : warningCount ? 'warnings' : 'no-warnings',
+          warningCount, ...(warningCount ? { warnings: result.warnings } : {}),
+          ...(result.failure ? { failure: result.failure } : {}) }, 'capability-trajectory-outcome');
+      } else {
+        const suggestions = result.suggestions ?? [];
+        diagnostic(ctx, { ...fields,
+          outcome: result.diagnostics?.endReason ?? result.failure ?? result.prefetch?.failure ?? 'completed',
+          suggestionCount: suggestions.length,
+          ...(suggestions.length && !result.fallback ? { suggestions: suggestions.map(s => `${s.type}:${s.name}`) } : {}),
+          ...(result.routingError ? { routingError: result.routingError } : {}),
+          ...(result.fallback ? { fallback: result.fallback } : {}),
+          ...(result.failure ?? result.prefetch?.failure ? { failure: result.failure ?? result.prefetch.failure } : {}) },
+          'capability-recommendation-outcome');
+      }
+    };
+    const budgetMs = options.timeoutMs ?? 60_000;
+    const deadline = AbortSignal.timeout(budgetMs);
     const signal = ctx.signal ? AbortSignal.any([ctx.signal, deadline]) : deadline;
     try {
       // This existing synchronous append also persists the current branch leaf.
-      if (!trace('start', { ...options, configuredOptions, effectiveOptions: options, predictionRounds: 1, budgetMs: 60000 }))
+      if (!trace('start', { ...options, configuredOptions, effectiveOptions: options, predictionRounds: 1, budgetMs }))
         throw new Error('Cannot persist trajectory boundary diagnostic');
       if (!sdk) throw new Error('Pi SDK prediction adapter is unavailable');
       const result = await run({ signal, trace });
@@ -144,54 +184,68 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         ...(trigger === 'periodic' ? { warningCount: result.warnings?.length ?? 0,
           outcome: result.failure ? 'failed' : result.warnings?.length ? 'warnings' : 'no-warnings' } : {}),
         totalMs: Math.round(performance.now() - start) });
+      recordOutcome(result);
       if (ctx.signal?.aborted) return;
-      if (result.failure || result.prefetch?.failure) ctx.ui.notify('能力预测／轨迹分析未完整完成；仍可使用 tool_search。', 'warning');
+      if (result.failure || result.prefetch?.failure || result.routingError) ctx.ui.notify('能力预测／轨迹分析未完整完成；仍可使用 tool_search。', 'warning');
       return result;
     } catch (error) {
       trace('failure', { cause: ctx.signal?.aborted ? 'caller' : deadline.aborted ? 'deadline' : 'error',
         ...(ctx.signal?.aborted ? {} : { error: String(error?.message ?? error) }) });
-      if (!ctx.signal?.aborted) ctx.ui.notify(`能力预测／轨迹分析失败：${error.message}；仍可使用 tool_search。`, 'warning');
+      const failed = { failure: deadline.aborted ? 'timeout' : 'setup-error',
+        error: String(error?.message ?? error), warnings: [] };
+      recordOutcome(failed);
+      if (ctx.signal?.aborted) return;
+      ctx.ui.notify(`能力预测／轨迹分析失败：${error.message}；仍可使用 tool_search。`, 'warning');
+      return failed;
     }
   }
-  function prepareAtInput(options, ctx, catalog, images, prompt, run) {
-    const configuredOptions = options;
-    options = { ...options, trajectoryWarnings: false };
-    return atBoundary('user-input', options, ctx, async ({ signal, trace }) => {
+  async function prepareAtInput(options, ctx, catalog, images, prompt, run) {
+    const configuredOptions = run.configuredOptions;
+    const result = await atBoundary('user-input', options, ctx, async ({ signal, trace }) => {
       const { readPaths, retainedReads } = preparationContext(ctx.sessionManager, '', ctx.cwd,
         { reads: options.actionPrediction, rules: false });
       signal.throwIfAborted();
       return predict({ sdk, query: await recommendationQuery(prompt, ctx.sessionManager, images, ctx.cwd, { signal }),
         catalog, ctx, options, signal, trace, readPaths, retainedReads });
     }, configuredOptions, { preparationId: run.id, inputId: run.inputId });
+    if (ctx.signal?.aborted || !result) return;
+    // This boundary owns the caller signal. An internal deadline may degrade, but
+    // a cancelled/invalidated preparation must never turn into a late directory.
+    if (result.fallback) return result;
+    if (options.capabilityPrediction && (result.routingError || result.failure)) {
+      return { prefetch: { version: 2, requests: 0, reads: 0, rounds: [], failure: result.failure },
+        ...result, ...fullCatalogFallback(catalog, result.routingError ?? result.error ?? result.failure) };
+    }
+    return result.prefetch ? result : undefined;
   }
   pi.on('turn_end', async (_event, ctx) => {
-    let options;
-    try { options = recommendationOptions(pi.getSettings().capabilityDiscovery); }
+    let configuredOptions;
+    try { configuredOptions = discoveryOptions(pi.getSettings().capabilityDiscovery); }
     catch (error) {
       diagnostic(ctx, { trigger: 'periodic', event: 'gate', reason: 'invalid-settings', error: error.message });
       ctx.ui.notify(error.message, 'warning'); return;
     }
-    const reason = ctx.signal?.aborted ? 'cancelled' : !options.trajectoryWarnings ? 'disabled'
-      : !options.trajectoryWarningEverySteps ? 'zero-interval'
-        : ++steps < options.trajectoryWarningEverySteps ? 'below-interval' : 'due';
+    const options = configuredOptions.trajectory;
+    const reason = ctx.signal?.aborted ? 'cancelled' : !options.enabled ? 'disabled'
+      : !options.everySteps ? 'zero-interval'
+        : ++steps < options.everySteps ? 'below-interval' : 'due';
     diagnostic(ctx, { trigger: 'periodic', event: 'gate', reason, steps,
-      enabled: options.trajectoryWarnings, interval: options.trajectoryWarningEverySteps });
+      enabled: options.enabled, interval: options.everySteps });
     if (reason !== 'due') return;
     steps = 0;
-    const effectiveOptions = { ...options, capabilityPrediction: false, actionPrediction: false };
-    const result = await atBoundary('periodic', effectiveOptions, ctx, async ({ signal, trace }) => review({
-      sdk, ctx, options: effectiveOptions, signal, trace, skills,
+    const result = await atBoundary('periodic', options, ctx, async ({ signal, trace }) => review({
+      sdk, ctx, options, signal, trace, skills,
       trajectory: await executionTrajectory(ctx.sessionManager, ctx.cwd, { signal }),
       systemPrompt: ctx.getSystemPrompt?.() ?? '', userPrompt: currentPrompt,
-    }), options);
+    }), configuredOptions);
     if (!result?.warnings.length) return;
     // Advisory only; never force continuation or turn a review into execution.
     return { entries: [{ type: 'custom_message', customType: 'capability-trajectory-warning', display: true,
       content: 'Trajectory review (advisory, not user instructions):\n' + JSON.stringify(result.warnings),
       details: { warnings: result.warnings } }] };
   });
-  // Capture the native definition rather than cloning its schema: MCP uses schema identity
-  // to recognize tool_search and wait for pending server connections before execute.
+  // Preserve the native schema and metadata (including reachesTools) so the host
+  // can wait for pending MCP registration before execute.
   const nativeSearch = (getAllTools = () => pi.getAllTools()) => {
     let definition;
     createToolSearchExtension()({
@@ -223,6 +277,10 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
           .filter(line => line.startsWith('- '))
           .map(line => line.replace(/ \((?:tool_search|codemode)\)(?=:|$)/, '')
             .replace(/find their tools with searchTools\(\)/, 'find them with tool_search'));
+        declaredMcp = [...new Map(mcpLines.flatMap(line => {
+          const match = line.match(/^- (mcp__[^: ]+)(?::\s*(.*))?$/);
+          return match ? [[match[1], { type: 'mcp', name: match[1], description: match[2] || `MCP service ${match[1]}` }]] : [];
+        })).values()];
         delete options.sections.mcp_servers;
         delete options.sections.pi_discovery;
         const deferred = toolCapabilities(pi.getAllTools());
@@ -238,28 +296,23 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         steps = 0;
         inputId = randomUUID();
         currentPrompt = event.prompt ?? '';
-        let preparation;
-        try { preparation = recommendationOptions(pi.getSettings().capabilityDiscovery); }
+        let configuredOptions;
+        try { configuredOptions = discoveryOptions(pi.getSettings().capabilityDiscovery); }
         catch (error) {
           diagnostic(ctx, { trigger: 'user-input', event: 'input', resetFromSteps,
             preparation: 'invalid-settings', error: error.message });
           ctx.ui.notify(error.message, 'warning'); return output;
         }
+        const preparation = configuredOptions.recommendation;
         const preparationDecision = !preparation.capabilityPrediction && !preparation.actionPrediction ? 'disabled'
           : !event.prompt?.trim() && !event.images?.length ? 'empty-input' : 'scheduled';
         diagnostic(ctx, { trigger: 'user-input', event: 'input', resetFromSteps,
-          configuredOptions: preparation, preparation: preparationDecision });
+          configuredOptions, preparation: preparationDecision });
         if (preparationDecision !== 'scheduled') return output;
         // Pending services remain discoverable without connecting or activating them.
-        const registeredMcp = mcpCapabilities(pi.getAllTools());
-        const pendingMcp = mcpLines.flatMap(line => {
-          const match = line.match(/^- (mcp__[^: ]+)(?::\s*(.*))?$/);
-          return match && !registeredMcp.some(c => c.name === match[1])
-            ? [{ type: 'mcp', name: match[1], description: match[2] || `MCP service ${match[1]}` }] : [];
-        });
         preparationRun = { id: randomUUID(), inputId, controller: new AbortController(),
           sessionId: ctx.sessionManager.getSessionId?.(), prompt: currentPrompt,
-          options: preparation, catalog: [...skills, ...registeredMcp, ...pendingMcp, ...deferred], images: event.images };
+          options: preparation, configuredOptions, catalog: capabilityCatalog(), images: event.images };
         return output;
       });
 
@@ -276,31 +329,31 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
       signal?.throwIfAborted();
       const task = query.trim();
       const tools = pi.getAllTools();
-      const catalog = [...skills, ...mcpCapabilities(tools), ...toolCapabilities(tools)];
+      const catalog = capabilityCatalog(tools);
       const exact = catalog.filter(c => [c.name.toLowerCase(), `${c.type}:${c.name}`.toLowerCase()].includes(task.toLowerCase()));
       const exactTool = tools.find(t => t.exposure !== 'hidden' && [t.name.toLowerCase(), `tool:${t.name}`.toLowerCase()].includes(task.toLowerCase()));
       const mode = task === '*' ? 'list' : exact.length || exactTool ? 'exact' : 'semantic';
-      let suggestions, routingError;
+      let suggestions, fallback;
       try {
-        suggestions = mode === 'list' || mode === 'exact'
-          ? (mode === 'list' ? catalog : exact).map(c => ({ ...c, confidence: null }))
-          : catalog.length ? await routeCapabilities(task, catalog, ctx?.modelRegistry, signal,
-            recommendationOptions(pi.getSettings().capabilityDiscovery).toolSearchThinkingLevel,
-            recommendationOptions(pi.getSettings().capabilityDiscovery)) : [];
+        if (mode === 'list' || mode === 'exact') {
+          suggestions = (mode === 'list' ? catalog : exact).map(c => ({ ...c, confidence: null }));
+        } else if (catalog.length) {
+          const options = discoveryOptions(pi.getSettings().capabilityDiscovery).recommendation;
+          suggestions = await routeCapabilities(task, catalog, ctx?.modelRegistry, signal, options.toolSearchThinkingLevel, options);
+        } else suggestions = [];
       } catch (error) {
         signal?.throwIfAborted();
-        // Keep native tool discovery usable if the local recommendation model is down.
-        // Report the failed Skill/MCP recommendation explicitly, never as a no-match.
-        routingError = `Capability routing failed: ${error.message}`;
-        suggestions = [];
+        fallback = fullCatalogFallback(catalog, `Capability routing failed: ${error.message}`);
+        suggestions = fallback.suggestions;
       }
       signal?.throwIfAborted();
-      const selected = suggestions.slice(0, limit);
+      const directoryOnly = mode === 'list' || !!fallback;
+      const selected = directoryOnly ? suggestions : suggestions.slice(0, limit);
       const namespaces = new Set(selected.filter(c => c.type === 'mcp').map(c => c.name));
       const toolNames = new Set(selected.filter(c => c.type === 'tool').map(c => c.name));
       if (exactTool) toolNames.add(exactTool.name);
       let loaded = [];
-      if (mode !== 'list' && (toolNames.size || namespaces.size || (mode === 'semantic' && !selected.length))) {
+      if (!directoryOnly && (toolNames.size || namespaces.size || (mode === 'semantic' && !selected.length))) {
         // Only scope candidates; ranking, activation and duplicate handling are native.
         const scoped = toolNames.size || namespaces.size
           ? nativeSearch(() => pi.getAllTools().filter(t => toolNames.has(t.name) || namespaces.has(t.namespace?.name)))
@@ -315,9 +368,9 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         && (toolNames.has(t.name) || namespaces.has(t.namespace?.name))).map(t => t.name);
       return result({
         mode, total: suggestions.length, suggestions: selected, loaded, availableTools,
-        ...(routingError ? { routingError } : {}),
-        hint: 'Read Skill files before use. Loaded tools are callable from the next model call; availableTools includes already-active matches. Suggestions may omit useful capabilities; confidence is not calibrated. Use an exact name or query="*" with a larger limit if routing fails. Discovery does not authorize execution.',
-      }, !!routingError && !loaded.length);
+        ...(fallback ? { fallback: fallback.fallback, routingError: fallback.routingError } : {}),
+        hint: directoryOnly ? directoryHint : 'Read Skill files before use. Loaded tools are callable from the next model call; availableTools includes already-active matches. Suggestions may omit useful capabilities; confidence is not calibrated. Discovery does not authorize execution.',
+      });
     },
   };
   pi.registerTool(discovery);

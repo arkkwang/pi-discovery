@@ -1,3 +1,4 @@
+import { recommendationOptions } from '../config.js';
 // No inference/network. Optional before-source snapshot permits an actual before/after comparison.
 // PI_DISCOVERY_SDK_ROOT=... PI_DISCOVERY_BEFORE=... node test/benchmark.mjs
 import assert from 'node:assert/strict';
@@ -6,7 +7,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setup } from './helpers.mjs';
-import { projectPrefetch, PREFETCH_TYPE, recommendationOptions } from '../prefetch.js';
+import { projectPrefetch, PREFETCH_TYPE } from '../prefetch.js';
 import { buildPredictionPrompts, predictionSchema } from '../prompts.js';
 // Optional PI_DISCOVERY_PROMPT_BEFORE is a trusted pre-change prefetch.js snapshot.
 // Extract only its pure assembly block; never execute the old SDK or host actions.
@@ -51,7 +52,7 @@ const after = await measure(() => s.prompt());
 const promptAssembly = [];
 for (const count of [20, 1000]) {
   const catalog = Array.from({ length: count }, (_, n) => ({ type: 'skill', name: `skill-${n}`, description: 'Implement and verify changes. '.repeat(10), path: `/skills/${n}/SKILL.md` }));
-  const options = recommendationOptions({ capabilityPrediction: true, actionPrediction: true, trajectoryWarnings: true });
+  const options = recommendationOptions({ capabilityPrediction: true, actionPrediction: true });
   const data = { catalog, options, schema: predictionSchema(catalog, catalog, options), cwd: '/project',
     tree: { entries: Array.from({ length: 200 }, (_, n) => `src/file-${n}.js`), maxDepth: 3, truncated: true },
     query: 'Current task and trajectory. '.repeat(300), rules: 'System and project rules. '.repeat(800),

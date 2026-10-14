@@ -58,12 +58,14 @@ test('validate original schema semantics; cancellation does not load anything', 
   await assert.rejects(s.tool.execute('id', { query: 'engineering' }, AbortSignal.abort()), { name: 'AbortError' });
   assert.equal(s.calls.length, 1);
 });
-test('routing failure remains explicit but native tool search still runs', async () => {
+test('routing failure returns a usable full directory without native search', async () => {
   const s = setup({ skills }); await s.prompt();
   const miss = await s.search({ query: '代码审查' });
-  assert.equal(miss.isError, true);
+  assert.notEqual(miss.isError, true);
   assert.match(miss.details.routingError, /llama\/iq3/);
-  assert.deepEqual(s.calls[1].args, { query: '代码审查', limit: 8 });
+  assert.equal(miss.details.fallback, 'full-catalog');
+  assert.equal(miss.details.suggestions.length, 2);
+  assert.equal(s.calls.length, 1);
   assert.equal((await s.search()).details.total, 2);
 });
 test('catalog refreshes, is request-independent and instance-local', async () => {

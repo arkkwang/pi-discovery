@@ -178,7 +178,7 @@ test('Skill recommendations no longer exclude deferred tools from semantic loadi
 });
 
 test('search thinking follows settings independently, with model effort mapping and no tool parameter', async t => {
-  const settings = { capabilityDiscovery: { autoRecommendThinkingLevel: 'off', toolSearchThinkingLevel: 'high' } };
+  const settings = { capabilityDiscovery: { recommendation: { thinkingLevel: 'off', toolSearchThinkingLevel: 'high' }, trajectory: { thinkingLevel: 'off' } } };
   const s = setup({ skills: [{ name: 'code', description: 'Implement code', filePath: '/test/SKILL.md' }], settings });
   await s.prompt();
   const bodies = [];
@@ -188,12 +188,12 @@ test('search thinking follows settings independently, with model effort mapping 
   const mapped = { ...registry, find: (...args) => ({ ...registry.find(...args), thinkingLevelMap: { high: 'xhigh' } }) };
   await s.search({ query: 'implement' }, { modelRegistry: mapped });
   assert.deepEqual(bodies.at(-1).chat_template_kwargs, { enable_thinking: true, reasoning_effort: 'xhigh' });
-  settings.capabilityDiscovery.toolSearchThinkingLevel = 'off';
-  settings.capabilityDiscovery.autoRecommendThinkingLevel = 'high';
+  settings.capabilityDiscovery.recommendation.toolSearchThinkingLevel = 'off';
+  settings.capabilityDiscovery.recommendation.thinkingLevel = 'high';
   await s.search({ query: 'implement' }, { modelRegistry: mapped });
   assert.deepEqual(bodies.at(-1).chat_template_kwargs, { enable_thinking: false, reasoning_effort: 'none' });
   assert.deepEqual(Object.keys(s.tool.parameters.properties).sort(), ['limit', 'query']);
-  settings.capabilityDiscovery.toolSearchThinkingLevel = 'typo';
+  settings.capabilityDiscovery.recommendation.toolSearchThinkingLevel = 'typo';
   const bad = await s.search({ query: 'implement' }, { modelRegistry: mapped });
   assert.match(bad.details.routingError, /toolSearchThinkingLevel/);
   assert.equal(bodies.length, 2);
@@ -212,5 +212,5 @@ test('configured provider/model and empty catalog schema', async t => {
     assert.doesNotMatch(JSON.stringify(schema), /"enum":\[\]/);
     return reply({ suggestions: [] });
   });
-  assert.deepEqual(await routeCapabilities('task', [], custom, undefined, 'medium', { provider: 'custom', model: 'small' }), []);
+  assert.deepEqual(await routeCapabilities('task', [], custom, undefined, 'medium', { model: 'custom/small' }), []);
 });

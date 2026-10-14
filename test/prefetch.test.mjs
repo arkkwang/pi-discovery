@@ -8,18 +8,19 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readPathKey } from '../trajectory.js';
 import { setup, sdkDepDir } from './helpers.mjs';
-import { recommendationOptions, projectPrefetch, runPrefetch, validatePrediction, PREFETCH_TYPE } from '../prefetch.js';
+import { projectPrefetch, runPrefetch, validatePrediction, PREFETCH_TYPE } from '../prefetch.js';
 import { projectIndex, skillFileIndex } from '../context-index.js';
+import { recommendationOptions, trajectoryOptions } from '../config.js';
 const root = process.env.PI_DISCOVERY_SDK_ROOT;
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const answer = value => ({ role: 'assistant', content: [{ type: 'text', text: JSON.stringify(value) }],
   provider: 'llama', model: 'iq3', api: 'openai-completions', usage, timestamp: Date.now(), stopReason: 'stop' });
 
 test('invalid prediction items are dropped without aborting valid ones', () => {
-  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { provider: 'llama', model: 'iq3', capabilityPrediction: false, actionPrediction: false, trajectoryWarnings: false, trajectoryWarningEverySteps: 5, maxSuggestedActions: 0, autoRecommendThinkingLevel: 'medium', toolSearchThinkingLevel: 'medium' });
-  assert.deepEqual(recommendationOptions(), { provider: 'llama', model: 'iq3', capabilityPrediction: false, actionPrediction: false, trajectoryWarnings: false, trajectoryWarningEverySteps: 5, maxSuggestedActions: 3, autoRecommendThinkingLevel: 'medium', toolSearchThinkingLevel: 'medium' });
-  assert.deepEqual(recommendationOptions({ capabilityPrediction: true }), { provider: 'llama', model: 'iq3', capabilityPrediction: true, actionPrediction: false, trajectoryWarnings: false, trajectoryWarningEverySteps: 5, maxSuggestedActions: 3, autoRecommendThinkingLevel: 'medium', toolSearchThinkingLevel: 'medium' });
-  for (const config of [{ prefetch: { maxSuggestedActions: 3 } }, { autoRecommend: 'true' }, { maxSuggestedActions: null }, { maxRunRounds: 3, maxRecommendedRounds: 2 }, { maxSuggestedActions: -1 }, { maxSuggestedActions: 9 }, null]) assert.throws(() => recommendationOptions(config));
+  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 0, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000 });
+  assert.deepEqual(recommendationOptions(), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000 });
+  assert.deepEqual(recommendationOptions({ capabilityPrediction: true, timeoutMs: 120_000 }), { model: 'llama/iq3', capabilityPrediction: true, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 120_000 });
+  for (const config of [{ prefetch: { maxSuggestedActions: 3 } }, { autoRecommend: 'true' }, { maxSuggestedActions: null }, { maxRunRounds: 3, maxRecommendedRounds: 2 }, { maxSuggestedActions: -1 }, { maxSuggestedActions: 9 }, { timeoutMs: 999 }, { timeoutMs: 600_001 }, { timeoutMs: '60000' }, null]) assert.throws(() => recommendationOptions(config));
   const catalog = [{ type: 'skill', name: 'test' }], files = [{ path: '/skill/SKILL.md' }];
   const opts = { actionPrediction: true, maxSuggestedActions: 3 };
   const kept = { tool: 'bash', arguments: { command: 'pwd' } };
@@ -152,17 +153,22 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(result.prefetch.rounds[0].messages[1].content[0].text, body);
     assert.equal(result.prefetch.rounds[1].messages[1].isError, false);
     assert.match(JSON.stringify(result.prefetch.rounds[1].messages[1]), /CUSTOM BASH RESULT/);
-    const child = sdk.SessionManager.open(result.diagnostics.childSession.file);
-    assert.equal(child.getSessionId(), result.diagnostics.childSession.id);
-    assert.equal(path.dirname(result.diagnostics.childSession.file), path.join(cwd, 'sessions', 'fixture-predictions'),
+    const child = sdk.SessionManager.open(result.diagnostics.discoverySessionFile);
+    assert.equal(child.getSessionId(), result.diagnostics.discoverySessionId);
+    assert.equal(path.dirname(result.diagnostics.discoverySessionFile), path.join(cwd, 'sessions', 'fixture-predictions'),
       'prediction transcripts persist in the isolated sessions tree');
-    assert.ok(path.basename(result.diagnostics.childSession.file).endsWith(`_${result.diagnostics.childSession.id}.jsonl`),
+    assert.ok(path.basename(result.diagnostics.discoverySessionFile).endsWith(`_${result.diagnostics.discoverySessionId}.jsonl`),
       'SDK default timestamp_ID.jsonl naming is preserved');
-    assert.equal(child.getSessionName(), `pi-discovery · preparation · llama/iq3 · ${result.diagnostics.childSession.id}`);
+    assert.equal(child.getSessionName(), `pi-discovery · preparation · llama/iq3 · ${result.diagnostics.discoverySessionId}`);
     const origin = child.getEntries().find(e => e.customType === 'capability-recommendation-origin');
     assert.equal(origin.data.parentSessionId, parent.getSessionId());
     assert.equal(origin.data.parentSessionFile, parent.getSessionFile());
     assert.equal(origin.data.parentLeafId, parent.getLeafId());
+    const outcomeEntry = child.getEntries().find(e => e.customType === 'capability-recommendation-outcome');
+    assert.equal(outcomeEntry.data.parentSessionId, parent.getSessionId(),
+      'child outcome entry names the session it recommended for');
+    assert.equal(outcomeEntry.data.parentSessionFile, parent.getSessionFile());
+    assert.equal(outcomeEntry.data.discoverySessionId, result.diagnostics.discoverySessionId);
     assert.equal(child.buildSessionContext().messages.filter(m => m.role === 'toolResult').length, 2);
     assert.ok(result.diagnostics.totalMs >= result.diagnostics.inferenceMs);
     assert.equal(result.diagnostics.endReason, 'actions-complete');
@@ -179,13 +185,19 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(partial.prefetch.rounds.length, 2);
     assert.equal(partial.diagnostics.dropped.length, 3);
     assert.deepEqual(traceEvents.find(e => e.event === 'drop').dropped, partial.diagnostics.dropped);
-    const partialChild = sdk.SessionManager.open(partial.diagnostics.childSession.file);
+    const partialChild = sdk.SessionManager.open(partial.diagnostics.discoverySessionFile);
     assert.deepEqual(partialChild.getEntries().find(e => e.customType === 'capability-recommendation-outcome').data.dropped,
       partial.diagnostics.dropped);
+    assert.equal(partialChild.getEntries().find(e => e.customType === 'capability-recommendation-outcome').data.parentSessionId,
+      parent.getSessionId(), 'even degraded runs keep the parent linkage in their outcome entry');
     const failed = await runPrefetch({ ...args, ctx: { ...ctx, modelRegistry: { ...registry,
-      streamSimple: async () => { throw new Error('fixture transport unavailable'); } } },
+      streamSimple: async () => { throw new Error('HTTP 429 fixture transport unavailable'); } } },
       trace: (event, data) => traceEvents.push({ event, ...data }) });
     assert.equal(failed.prefetch.failure, 'prediction-error');
+    assert.equal(failed.fallback, 'full-catalog');
+    assert.match(failed.routingError, /HTTP 429/);
+    assert.deepEqual(failed.suggestions, args.catalog.map(c => ({ ...c, confidence: null })));
+    assert.deepEqual(failed.prefetch.rounds, []);
     assert.equal(typeof traceEvents.findLast(e => e.event === 'failure').error, 'string');
     assert.ok(traceEvents.findLast(e => e.event === 'failure').error.length);
     value = validValue;
@@ -193,15 +205,15 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const initialValue = value;
     expectedLimit = 0;
     const beforeWarnings = predictions;
-    const disabled = await runPrefetch({ ...args, options: { trajectoryWarnings: true } });
+    const disabled = await runPrefetch({ ...args, options: {} });
     assert.equal(predictions, beforeWarnings, 'preparation never runs trajectory analysis');
     assert.equal(disabled.prefetch.requests, 0);
     value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [] };
     const capabilityOnly = await runPrefetch({ ...args, options: { capabilityPrediction: true } });
     assert.equal(capabilityOnly.prefetch.failure, undefined);
     assert.equal(capabilityOnly.diagnostics.tree.entries, 0);
-    assert.notEqual(capabilityOnly.diagnostics.childSession.file, result.diagnostics.childSession.file);
-    assert.notEqual(capabilityOnly.diagnostics.childSession.id, result.diagnostics.childSession.id);
+    assert.notEqual(capabilityOnly.diagnostics.discoverySessionFile, result.diagnostics.discoverySessionFile);
+    assert.notEqual(capabilityOnly.diagnostics.discoverySessionId, result.diagnostics.discoverySessionId);
     assert.doesNotMatch(observedSystem, /## Preparation actions|## Trajectory warnings/);
     expectedLimit = 3;
     value = { suggestions: [], actions: [] };
@@ -219,7 +231,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.ok(observedInput.includes(file));
     assert.match(observedSystem, /already retained/i);
     assert.equal(dedup.diagnostics.skipped[0].reason, 'already-read');
-    const dedupChild = sdk.SessionManager.open(dedup.diagnostics.childSession.file);
+    const dedupChild = sdk.SessionManager.open(dedup.diagnostics.discoverySessionFile);
     assert.equal(dedupChild.buildSessionContext().messages.filter(m => m.role === 'toolResult').length, 0);
     readPaths.clear();
     value.actions.push({ tool: 'read', arguments: { path: 'project:skill/SKILL.md' } });
@@ -259,7 +271,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
         { name: 'subagent_start', exposure: 'codemode', description: 'Delegate a task' },
         { name: 'hidden_tool', exposure: 'hidden', description: 'Not available' }],
       sections: { mcp_servers: '- mcp__pending (tool_search): Pending service\n- mcp__undescribed (codemode)\n- mcp__ready (tool_search): Ready service' },
-      settings: { capabilityDiscovery: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 3 } },
+      settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 3 } } },
       mcpWait: () => assert.fail('must not wait for MCP') });
     const accepted = await hook.handlers.before_agent_start({ prompt: 'prepare', systemPromptOptions: {
       skills: [{ name: 'test', description: 'Test', filePath: file }], sections: {} } }, ctx);
@@ -272,7 +284,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const ids = observedInput;
     for (const id of ['skill:test', 'mcp:mcp__pending', 'mcp:mcp__ready', 'mcp:mcp__undescribed', 'tool:notify', 'tool:subagent_start']) assert.ok(ids.includes(id));
     assert.ok(!ids.includes('tool:hidden_tool'));
-    const recommendationSession = sdk.SessionManager.open(hook.diagnostics.findLast(e => e.data.event === 'complete').data.childSession.file);
+    const recommendationSession = sdk.SessionManager.open(hook.diagnostics.findLast(e => e.data.event === 'complete').data.discoverySessionFile);
     const savedSchema = recommendationSession.getEntries().find(e => e.customType === 'capability-recommendation-schema');
     assert.deepEqual(savedSchema.data, observedPayload.response_format.json_schema);
     assert.deepEqual([...observedInput.matchAll(/^### (mcp:[a-z_]+)/gm)].map(m => m[1]).sort(),
@@ -285,13 +297,13 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
       { messages: convertToLlm(projected) }, new Set());
     assert.equal(provider.filter(m => m.type === 'function_call').length, 2);
     assert.equal(provider.filter(m => m.type === 'function_call_output').length, 2);
-    assert.doesNotMatch(JSON.stringify(provider), /childSession|inferenceMs|endReason|totalMs/);
-    assert.ok(hook.diagnostics.findLast(e => e.data.event === 'complete').data.childSession.file);
+    assert.doesNotMatch(JSON.stringify(provider), /discoverySession|inferenceMs|endReason|totalMs/);
+    assert.ok(hook.diagnostics.findLast(e => e.data.event === 'complete').data.discoverySessionFile);
     assert.equal(hook.diagnostics.findLast(e => e.data.event === 'complete').data.requests, 1);
 
     expectedLimit = 0;
     value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [] };
-    const zero = setup({ sdk: sdkFixture, settings: { capabilityDiscovery: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 0 } },
+    const zero = setup({ sdk: sdkFixture, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 0 } } },
       mcpWait: () => assert.fail('zero-action mode must not wait for MCP') });
     const zeroEvent = { prompt: 'recommend only', systemPromptOptions: { skills: [{ name: 'test', description: 'Test', filePath: file }], sections: {} } };
     assert.equal(await zero.handlers.before_agent_start(zeroEvent, ctx), undefined);
@@ -307,12 +319,12 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const empty = await runPrefetch({ ...args, query: '谢谢，先这样。' });
     assert.equal(predictions, 1); assert.equal(empty.prefetch.rounds.length, 0);
     assert.equal(empty.diagnostics.endReason, 'no-actions-needed');
-    assert.match(await readFile(empty.diagnostics.childSession.file, 'utf8'), /谢谢/);
+    assert.match(await readFile(empty.diagnostics.discoverySessionFile, 'utf8'), /谢谢/);
 
     for (const level of ['off', 'low', 'high']) {
       expectedThinking = level === 'off' ? undefined : level;
       const configured = await runPrefetch({ ...args, options: { ...args.options,
-        autoRecommendThinkingLevel: level, toolSearchThinkingLevel: 'medium' } });
+        thinkingLevel: level, toolSearchThinkingLevel: 'medium' } });
       assert.equal(configured.prefetch.failure, undefined);
     }
     expectedThinking = 'medium';
@@ -321,13 +333,13 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const bad = await runPrefetch(args);
     assert.equal(bad.prefetch.failure, undefined); assert.equal(bad.prefetch.rounds.length, 0);
     assert.equal(bad.diagnostics.dropped[0].reason, 'invalid-action');
-    assert.match(await readFile(bad.diagnostics.childSession.file, 'utf8'), /invalid-action/, 'invalid prediction is retained as evidence, not executed');
+    assert.match(await readFile(bad.diagnostics.discoverySessionFile, 'utf8'), /invalid-action/, 'invalid prediction is retained as evidence, not executed');
 
     const cancelled = await runPrefetch({ ...args, rules: 'SETUP RULE EVIDENCE', signal: AbortSignal.abort() });
     assert.equal(cancelled.diagnostics.endReason, 'cancelled-or-timeout');
-    assert.match(await readFile(cancelled.diagnostics.childSession.file, 'utf8'), /prepare/);
+    assert.match(await readFile(cancelled.diagnostics.discoverySessionFile, 'utf8'), /prepare/);
     assert.equal(cancelled.diagnostics.requests, 0);
-    const cancelledChild = sdk.SessionManager.open(cancelled.diagnostics.childSession.file);
+    const cancelledChild = sdk.SessionManager.open(cancelled.diagnostics.discoverySessionFile);
     const savedInput = cancelledChild.getEntries().find(e => e.type === 'message' && e.message.role === 'user').message.content;
     assert.match(savedInput, /prepare/);
     assert.doesNotMatch(savedInput, /SETUP RULE EVIDENCE/, 'disabled warning context is omitted');
@@ -363,7 +375,7 @@ test('live IQ3 through the full discovery entry includes configured MCP metadata
       const hook = setup({ sdk: liveSdk, sections: { mcp_servers: section },
         tools: [{ name: 'notify', exposure: 'deferred', description: 'Send a notification to the user when work finishes' },
           { name: 'subagent_start', exposure: 'codemode', description: 'Start a subagent for independent review or delegated work' }],
-        settings: { capabilityDiscovery: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: recommendationOnly ? 0 : 3 } },
+        settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: recommendationOnly ? 0 : 3 } } },
         mcpWait: () => assert.fail('metadata-only recommendation must not wait for MCP') });
       const append = hook.pi.appendEntry;
       hook.pi.appendEntry = (type, data) => { append(type, data); parent.appendCustomEntry(type, data); };
@@ -390,7 +402,7 @@ test('live IQ3 through the full discovery entry includes configured MCP metadata
         assert.ok(calls.some(c => c.arguments.path?.includes('practical-memory') && path.basename(c.arguments.path) === 'SKILL.md'));
         assert.ok(calls.every(c => c.name === 'read'), 'quota preparation does not need Bash');
       }
-      const child = sdk.SessionManager.open(result.childSession.file);
+      const child = sdk.SessionManager.open(result.discoverySessionFile);
       const system = child.buildSessionContext().messages.filter(m => m.role === 'system').map(m => m.sections?.preamble ?? m.content).join("\n");
       const input = child.buildSessionContext().messages.find(m => m.role === 'user').content;
       assert.match(JSON.stringify(input), /mcp:mcp__/);
@@ -402,23 +414,31 @@ test('live IQ3 through the full discovery entry includes configured MCP metadata
 
 test('thinking settings validate independently and preserve all supported levels', () => {
   for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
-    assert.equal(recommendationOptions({ autoRecommendThinkingLevel: level }).autoRecommendThinkingLevel, level);
+    assert.equal(recommendationOptions({ thinkingLevel: level }).thinkingLevel, level);
     assert.equal(recommendationOptions({ toolSearchThinkingLevel: level }).toolSearchThinkingLevel, level);
   }
-  for (const key of ['autoRecommendThinkingLevel', 'toolSearchThinkingLevel']) {
+  for (const key of ['thinkingLevel', 'toolSearchThinkingLevel']) {
     for (const value of [null, false, 1, '', 'Medium', 'typo']) {
       assert.throws(() => recommendationOptions({ [key]: value }), new RegExp(key));
     }
   }
 });
 
+test('boundary budgets are configurable per option group', () => {
+  assert.equal(trajectoryOptions().timeoutMs, 60_000);
+  assert.equal(trajectoryOptions({ timeoutMs: 5_000 }).timeoutMs, 5_000);
+  assert.equal(recommendationOptions({ timeoutMs: 600_000 }).timeoutMs, 600_000);
+  for (const value of [null, false, '60', 999, 600_001, 2.5]) {
+    assert.throws(() => trajectoryOptions({ timeoutMs: value }), /timeoutMs/);
+    assert.throws(() => recommendationOptions({ timeoutMs: value }), /timeoutMs/);
+  }
+});
+
 test('malformed predictions degrade per item; warnings never enter preparation output', () => {
   assert.deepEqual(validatePrediction(null, [], []), { suggestions: [], actions: [], dropped: [{ kind: 'response', reason: 'not-an-object' }] });
-  for (const trajectoryWarnings of [true, false]) {
-    const result = validatePrediction({ suggestions: [], actions: [], warnings: [] }, [], [],
-      { capabilityPrediction: true, actionPrediction: true, trajectoryWarnings });
-    assert.deepEqual(result, { suggestions: [], actions: [], dropped: [{ kind: 'field', reason: 'unknown-field', item: 'warnings' }] });
-  }
+  const result = validatePrediction({ suggestions: [], actions: [], warnings: [] }, [], [],
+    { capabilityPrediction: true, actionPrediction: true });
+  assert.deepEqual(result, { suggestions: [], actions: [], dropped: [{ kind: 'field', reason: 'unknown-field', item: 'warnings' }] });
   const missing = validatePrediction({ suggestions: [{ id: 'unknown', confidence: 1 }] }, [], [], { capabilityPrediction: true, actionPrediction: true });
   assert.deepEqual(missing.suggestions, []);
   assert.deepEqual(missing.dropped.filter(d => d.reason === 'invalid-capability').length, 1);
@@ -433,8 +453,8 @@ test('malformed predictions degrade per item; warnings never enter preparation o
 });
 
 test('warning trigger settings are strict and independent', () => {
-  for (const value of [0, 1, 5, 1000]) assert.equal(recommendationOptions({ trajectoryWarningEverySteps: value }).trajectoryWarningEverySteps, value);
-  for (const value of [-1, 1001, 1.5, null, '5', false]) assert.throws(() => recommendationOptions({ trajectoryWarningEverySteps: value }));
+  for (const value of [0, 1, 5, 1000]) assert.equal(trajectoryOptions({ everySteps: value }).everySteps, value);
+  for (const value of [-1, 1001, 1.5, null, '5', false]) assert.throws(() => trajectoryOptions({ everySteps: value }));
   assert.throws(() => recommendationOptions({ trajectoryWarningOnUserInput: false }), /accepts only/);
   for (const value of [null, 0, 'true']) assert.throws(() => recommendationOptions({ trajectoryWarningOnUserInput: value }));
 });
@@ -447,5 +467,5 @@ test('all switches disabled makes zero requests; configured model rejects unsupp
     assert.equal(provider, 'custom'); assert.equal(model, 'chosen');
     return { api: 'anthropic-messages' };
   } } };
-  await assert.rejects(runPrefetch({ ctx, options: { provider: 'custom', model: 'chosen', capabilityPrediction: true } }), /custom\/chosen.*only openai-completions/);
+  await assert.rejects(runPrefetch({ ctx, options: { model: 'custom/chosen', capabilityPrediction: true } }), /custom\/chosen.*only openai-completions/);
 });

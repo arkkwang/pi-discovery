@@ -35,6 +35,8 @@
   "files": [
     "index.js",
     "discovery.js",
+    "catalog.js",
+    "config.js",
     "router.js",
     "prompts.js",
     "prefetch.js",

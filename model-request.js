@@ -1,4 +1,4 @@
-import { thinkingLevel } from './router.js';
+import { thinkingLevel, parseModel } from './config.js';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdirSync } from 'node:fs';
@@ -11,7 +11,7 @@ export function createInternalSession(sdk, ctx, kind, options) {
   const cwd = path.join(tmpdir(), 'pi-discovery');
   mkdirSync(cwd, { recursive: true });
   const manager = sdk.SessionManager.create(cwd);
-  manager.appendSessionInfo(`pi-discovery · ${kind} · ${options.provider}/${options.model} · ${manager.getSessionId()}`);
+  manager.appendSessionInfo(`pi-discovery · ${kind} · ${options.model} · ${manager.getSessionId()}`);
   return manager;
 }
 export async function requestModel({ sdk, ctx, options, manager, prompts, schema, signal,
@@ -21,8 +21,9 @@ export async function requestModel({ sdk, ctx, options, manager, prompts, schema
   signal?.addEventListener('abort', abort, { once: true });
   try {
     signal?.throwIfAborted();
-    const model = ctx.modelRegistry.find(options.provider, options.model);
-    if (!model) throw new Error(`${options.provider}/${options.model} is not configured`);
+    const selected = parseModel(options.model);
+    const model = ctx.modelRegistry.find(selected.provider, selected.id);
+    if (!model) throw new Error(`${options.model} is not configured`);
     if (model.api !== 'openai-completions') throw new Error('Only openai-completions is supported');
     const settingsManager = sdk.SettingsManager.inMemory({ packages: [], skills: [], compaction: { enabled: false }, retry: { enabled: false } });
     const resourceLoader = new sdk.DefaultResourceLoader({ cwd: manager.getCwd(), agentDir: sdk.getAgentDir(), settingsManager,
@@ -32,7 +33,7 @@ export async function requestModel({ sdk, ctx, options, manager, prompts, schema
     signal?.throwIfAborted();
     const runtime = await sdk.ModelRuntime.create({ refreshOnCreate: false });
     ({ session } = await sdk.createAgentSession({ cwd: manager.getCwd(), model,
-      thinkingLevel: thinkingLevel(options.autoRecommendThinkingLevel, 'autoRecommendThinkingLevel'), modelRuntime: runtime,
+      thinkingLevel: thinkingLevel(options.thinkingLevel), modelRuntime: runtime,
       settingsManager, resourceLoader, tools: [], sessionManager: manager }));
     session.agent.streamFunction = (selected, context, streamOptions) => {
       signal?.throwIfAborted();
@@ -53,8 +54,14 @@ export async function requestModel({ sdk, ctx, options, manager, prompts, schema
     }
     signal?.throwIfAborted();
     const answer = session.messages.filter(m => m.role === 'assistant').at(-1);
-    if (!answer || answer.stopReason !== 'stop') throw new Error('Prediction did not complete');
-    return JSON.parse(answer.content.filter(c => c.type === 'text').map(c => c.text).join(''));
+    if (!answer || answer.stopReason !== 'stop') {
+      // Preserve a provider status without copying arbitrary response bodies into
+      // the main context. Full transport evidence stays in the child session.
+      const status = answer?.errorMessage?.match(/\b[45]\d{2}\b/)?.[0];
+      throw new Error(`Prediction did not complete${status ? ` (HTTP ${status})` : ''}`);
+    }
+    try { return JSON.parse(answer.content.filter(c => c.type === 'text').map(c => c.text).join('')); }
+    catch { throw new Error('Prediction returned invalid JSON'); }
   } finally {
     signal?.removeEventListener('abort', abort);
     if (session) { await session.abort(); session.dispose(); }

@@ -24,7 +24,7 @@ pi install npm:@arkkwang/pi-discovery
 pi install .
 ```
 
-轨迹相关功能另需 pi-snap **≥0.4.0** 在 `PATH` 中（`npm install -g @arkkwang/pi-snap`），支持显式 `trajectory` 预设。本扩展不会自行升级命令。CLI 缺失或失败时预测/审查显式失败，由外围 warning 与 diagnostic fail-open 保持主任务可继续。
+轨迹相关功能另需 pi-snap **≥0.5.0** 在 `PATH` 中（`npm install -g @arkkwang/pi-snap`），支持显式 `trace` 视图；旧 `--preset`／`--trace` 参数已移除。本扩展不会自行升级命令。CLI 缺失或失败时预测/审查显式失败，由外围 warning 与 diagnostic fail-open 保持主任务可继续。
 
 ## 配置
 
@@ -93,7 +93,7 @@ pi install .
 
 ## 执行轨迹与事件
 
-两条入口都异步调用 `pi-snap <sessionManager.getSessionFile()> --preset trajectory --max-chars 0 --tail 160`，显式选择当前分支的 User／Assistant、工具调用发起、行为推荐和已有纠偏提醒，排除 thinking、图片和工具结果（包括错误与预取结果）。`--max-chars 0` 避免正文先被逐行截断，再由下述总预算保留最近内容。预设负责筛选与单行展示，不依赖 pi-snap 的默认输出，也不推断调用是否成功；完整证据可按输出序号展开。本扩展不解析历史消息生成另一套轨迹，读取去重仍独立使用 SDK 有效上下文投影。
+两条入口都异步调用 `pi-snap <sessionManager.getSessionFile()> --view trace --max-chars 0 --tail 160`，显式选择当前分支的 User／Assistant、工具调用发起、行为推荐和已有纠偏提醒，排除 thinking、图片和工具结果（包括错误与预取结果）。`--max-chars 0` 避免正文先被逐行截断，再由下述总预算保留最近内容。视图负责筛选与单行展示，行内带真实来源标签链，工具名移入正文（`→ read`、`← read`），不依赖 pi-snap 的默认输出，也不推断调用是否成功；完整证据可按输出序号展开。本扩展不解析历史消息生成另一套轨迹，读取去重仍独立使用 SDK 有效上下文投影。
 
 宿主通过固定 Bash 命令 `exec pi-snap "$@"` 传独立参数，兼容 Git Bash/macOS Bash，不拼接路径进 shell 脚本，不查安装目录、不新增本地 npm 依赖。单次 CLI 超时 5 秒，继承触发取消信号，stdout/stderr 缓冲各限 8 MiB；这部分包含在 60 秒总预算内。只对输出字符串保留近期 6000 字符并标明截断，不重新解释语义；开头当前请求独立保留首尾约 4000 字符。工具参数或早期记录被省略不证明它们不存在。
 

@@ -152,7 +152,7 @@ function formatRules({ fresh, retained: reads }, systemPrompt) {
   return clip(output, 24000);
 }
 
-// pi-snap owns record rendering/filtering. Select its trajectory preset explicitly;
+// pi-snap owns record rendering/filtering. Select its trace view explicitly;
 // leave row bodies intact before applying this caller's total text budget.
 // The boundary diagnostic is synchronously appended before this read, so the file's
 // last parentId chain reflects the active SDK branch, including after branch().
@@ -170,7 +170,7 @@ export async function executionTrajectory(sessionManager, cwd, { signal } = {}) 
   const executionSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const text = await new Promise((resolve, reject) => {
     execFile('bash', ['-c', 'exec pi-snap "$@"', 'pi-snap', file,
-      '--preset', 'trajectory', '--max-chars', '0', '--tail', '160'], {
+      '--view', 'trace', '--max-chars', '0', '--tail', '160'], {
       cwd: location(sessionManager, cwd), encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024, signal: executionSignal, windowsHide: true,
     }, (error, stdout, stderr) => {

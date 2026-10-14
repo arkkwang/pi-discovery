@@ -18,9 +18,9 @@ test('executes source pi-snap via PATH; arguments are literal; no local semantic
   {type:'context_edit',targetId:'e2',replacement:null},
  ]);
  const text=await executionTrajectory(sm);
- // The caller selects a preset; it must not rely on pi-snap's unfiltered default.
+ // The caller selects a view; it must not rely on pi-snap's unfiltered default.
  for(const value of ['Task','Checking','git status','[   1]','[   2]']) assert.ok(text.includes(value),text);
- assert.doesNotMatch(text,/SECRET|\[←|\[compaction\]|\[context_edit\]/);
+ assert.doesNotMatch(text,/SECRET|type:compaction|type:context_edit/);
  const query=await recommendationQuery('CURRENT',sm,[{data:'IMAGE_SECRET'}]);
  assert.match(query,/CURRENT/);assert.match(query,/\[image\]/);assert.doesNotMatch(query,/IMAGE_SECRET/);
 });
@@ -30,7 +30,7 @@ test('passes explicit selection and unlimited row length to the CLI', async t =>
  const sm=await sessionFixture(t.after.bind(t),[message('user','history')]);
  const text=await executionTrajectory(sm);
  assert.ok(text.includes(sm.getSessionFile()));
- assert.match(text,/--preset\ntrajectory\n--max-chars\n0\n--tail\n160/);
+ assert.match(text,/--view\ntrace\n--max-chars\n0\n--tail\n160/);
 });
 
 test('recommendations and calls survive; hidden payloads do not; custom messages count as history', { skip: snapCliMissing }, async t => {
@@ -42,7 +42,8 @@ test('recommendations and calls survive; hidden payloads do not; custom messages
  for(const entry of [{type:'custom_message',...recommendation},message('custom',recommendation.content,recommendation)]) {
   const sm=await sessionFixture(t.after.bind(t),[entry]);
   const text=await executionTrajectory(sm);
-  assert.match(text,/RECOMMENDATION/);assert.match(text,/recommend → read/);assert.match(text,/PREP_FILE/);
+  assert.match(text,/RECOMMENDATION/);
+  assert.match(text,/capability-prefetch > role:assistant > type:toolCall\] → read path=PREP_FILE/);
   assert.doesNotMatch(text,/PREP_RESULT_SECRET/);
  }
  const sm=await sessionFixture(t.after.bind(t),[

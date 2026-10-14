@@ -24,7 +24,7 @@ Or clone this repository and install the local package from the repository root:
 pi install .
 ```
 
-Trajectory-related features additionally require pi-snap **≥0.4.0** on `PATH` (`npm install -g @arkkwang/pi-snap`), with the explicit `trajectory` preset. This extension does not upgrade the command itself. When the CLI is missing or fails, prediction/review fails explicitly; the surrounding warning and diagnostic fail-open keep the main task continuing.
+Trajectory-related features additionally require pi-snap **≥0.5.0** on `PATH` (`npm install -g @arkkwang/pi-snap`), with the explicit `trace` view. The retired `--preset`/`--trace` flags are not accepted. This extension does not upgrade the command itself. When the CLI is missing or fails, prediction/review fails explicitly; the surrounding warning and diagnostic fail-open keep the main task continuing.
 
 ## Configuration
 
@@ -93,7 +93,7 @@ The isolated SDK session does not load user extensions, MCP, project instruction
 
 ## Execution trajectory and events
 
-Both entry points asynchronously invoke `pi-snap <sessionManager.getSessionFile()> --preset trajectory --max-chars 0 --tail 160`. This explicitly selects user/assistant messages, tool-call requests, behavior recommendations, and prior corrective warnings on the current branch, excluding thinking, images, and tool results (including errors and preparation results). `--max-chars 0` avoids per-row clipping before the total budget below retains recent content. The preset owns filtering and single-line presentation; the adapter neither relies on pi-snap's default output nor infers execution success. Full evidence can be opened using the displayed record numbers. This extension does not parse historical messages to build a separate trajectory; read deduplication still independently uses the SDK's effective context projection.
+Both entry points asynchronously invoke `pi-snap <sessionManager.getSessionFile()> --view trace --max-chars 0 --tail 160`. This explicitly selects user/assistant messages, tool-call requests, behavior recommendations, and prior corrective warnings on the current branch, excluding thinking, images, and tool results (including errors and preparation results). `--max-chars 0` avoids per-row clipping before the total budget below retains recent content. The view owns filtering and single-line presentation; rows carry the source tag chain and tool names in the body (`→ read`, `← read`); the adapter neither relies on pi-snap's default output nor infers execution success. Full evidence can be opened using the displayed record numbers. This extension does not parse historical messages to build a separate trajectory; read deduplication still independently uses the SDK's effective context projection.
 
 The host passes independent arguments via the fixed Bash command `exec pi-snap "$@"`, compatible with Git Bash/macOS Bash; it does not concatenate paths into a shell script, does not look up installation directories, and adds no local npm dependencies. A single CLI call times out at 5 seconds, inherits the trigger's cancellation signal, and its stdout/stderr buffers are each capped at 8 MiB; this is included in the 60-second total budget. Only the most recent 6000 characters of the output string are retained, with truncation marked; semantics are not reinterpreted. The current request at the beginning independently keeps roughly the first and last 4000 characters. Omitted tool parameters or early records do not prove they did not exist.
 

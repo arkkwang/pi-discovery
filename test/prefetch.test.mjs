@@ -17,9 +17,9 @@ const answer = value => ({ role: 'assistant', content: [{ type: 'text', text: JS
   provider: 'llama', model: 'iq3', api: 'openai-completions', usage, timestamp: Date.now(), stopReason: 'stop' });
 
 test('invalid prediction items are dropped without aborting valid ones', () => {
-  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 0, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000 });
-  assert.deepEqual(recommendationOptions(), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000 });
-  assert.deepEqual(recommendationOptions({ capabilityPrediction: true, timeoutMs: 120_000 }), { model: 'llama/iq3', capabilityPrediction: true, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 120_000 });
+  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 0, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
+  assert.deepEqual(recommendationOptions(), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
+  assert.deepEqual(recommendationOptions({ capabilityPrediction: true, timeoutMs: 120_000 }), { model: 'llama/iq3', capabilityPrediction: true, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 120_000, disableForCwd: [] });
   for (const config of [{ prefetch: { maxSuggestedActions: 3 } }, { autoRecommend: 'true' }, { maxSuggestedActions: null }, { maxRunRounds: 3, maxRecommendedRounds: 2 }, { maxSuggestedActions: -1 }, { maxSuggestedActions: 9 }, { timeoutMs: 999 }, { timeoutMs: 600_001 }, { timeoutMs: '60000' }, null]) assert.throws(() => recommendationOptions(config));
   const catalog = [{ type: 'skill', name: 'test' }], files = [{ path: '/skill/SKILL.md' }];
   const opts = { actionPrediction: true, maxSuggestedActions: 3 };

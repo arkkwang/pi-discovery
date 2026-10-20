@@ -38,14 +38,16 @@ pi install .
       "maxSuggestedActions": 3,
       "thinkingLevel": "low",
       "toolSearchThinkingLevel": "medium",
-      "timeoutMs": 60000
+      "timeoutMs": 60000,
+      "disableForCwd": []
     },
     "trajectory": {
       "model": "zai-coding-cn/glm-5.3-flash",
       "enabled": true,
       "everySteps": 15,
       "thinkingLevel": "low",
-      "timeoutMs": 120000
+      "timeoutMs": 120000,
+      "disableForCwd": ["D:/work/experiments"]
     }
   }
 }
@@ -66,14 +68,17 @@ pi install .
 | recommendation | `thinkingLevel` | `"medium"` | 自动能力/动作预测的思考级别 |
 | recommendation | `toolSearchThinkingLevel` | `"medium"` | 显式语义搜索的思考级别 |
 | recommendation | `timeoutMs` | `60000` | 准备阶段的预算（毫秒），整数 1000–600000 |
+| recommendation | `disableForCwd` | `[]` | 会话 CWD 命中列表时跳过准备；路径字符串数组 |
 | trajectory | `model` | `"llama/iq3"` | 周期轨迹预警使用的 `provider/model` |
 | trajectory | `enabled` | `false` | 是否启用周期轨迹预警，布尔值 |
 | trajectory | `everySteps` | `5` | 预警间隔，整数 0–1000；0 关闭周期 |
 | trajectory | `thinkingLevel` | `"medium"` | 轨迹预警的思考级别 |
 | trajectory | `timeoutMs` | `60000` | 审查阶段的预算（毫秒），整数 1000–600000 |
+| trajectory | `disableForCwd` | `[]` | 会话 CWD 命中列表时跳过周期审查；路径字符串数组 |
 
 - `model` 必须是非空 `provider/model` 字符串，不含空白；按第一个 `/` 分割，支持 `provider/vendor/model` 这类带 `/` 的模型 ID。模型须已在 Pi 中配置，当前仅支持 `openai-completions` API。
 - 三个思考级别字段均支持 `off/minimal/low/medium/high/xhigh/max`，实际映射取决于所选模型，不受主会话思考级别影响。
+- `disableForCwd` 列出不做本阶段模型工作的项目根路径：准备阶段在输入门禁记录 `disabled-by-cwd`，审查阶段在步数门禁记录 `disabled-by-cwd`。条目支持绝对路径、`~/` 开头路径或相对路径（相对 Pi 进程 CWD 解析）；`/` 与 `\` 通用，`.`/`..`、重复或末尾分隔符会归一化，Windows 下忽略大小写。匹配按目录本体精确相等——列出根目录不覆盖其子目录，两阶段各自独立判断。手动 `tool_search` 不受影响。
 - 示例让两阶段使用同一模型以保留原配置意图；可以分别改成不同模型。`tool_search` 属于 recommendation 阶段，不是第三个模型配置阶段；即使关闭自动预测，手动搜索仍可使用该模型。
 - **旧平铺格式不再接受，也不自动迁移。** 将 `provider` + `model` 合并为每组的 `model`；能力/动作开关与动作上限移入 recommendation，`autoRecommendThinkingLevel` 拆为两组各自的 `thinkingLevel`，`toolSearchThinkingLevel` 移入 recommendation；`trajectoryWarnings` 改为 `trajectory.enabled`，`trajectoryWarningEverySteps` 改为 `trajectory.everySteps`。旧键、错误层级、未知键或无效值会明确报错，不会静默忽略。
 

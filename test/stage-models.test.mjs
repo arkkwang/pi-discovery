@@ -1,11 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 
-import { recommendationOptions, discoveryOptions, trajectoryOptions, parseModel } from '../config.js';
+import { recommendationOptions, discoveryOptions, trajectoryOptions, parseModel, cwdKey, cwdDisabled } from '../config.js';
 
 const cwd = mkdtempSync(path.join(tmpdir(), 'discovery-stages-'));
 after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -102,8 +102,8 @@ test('only two root keys; defaults and every nested key are validated independen
   const defaults = discoveryOptions();
   assert.deepEqual(Object.keys(defaults), ['recommendation', 'trajectory']);
   assert.deepEqual(defaults.recommendation, { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false,
-    maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000 });
-  assert.deepEqual(defaults.trajectory, { model: 'llama/iq3', enabled: false, everySteps: 5, thinkingLevel: 'medium', timeoutMs: 60_000 });
+    maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
+  assert.deepEqual(defaults.trajectory, { model: 'llama/iq3', enabled: false, everySteps: 5, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
   const changed = discoveryOptions({ recommendation: { model: 'custom/a', thinkingLevel: 'high' } });
   assert.deepEqual(changed.trajectory, defaults.trajectory, 'no cross-stage inheritance');
   assert.deepEqual(parseModel('provider/vendor/model'), { provider: 'provider', id: 'vendor/model' });
@@ -123,6 +123,28 @@ test('only two root keys; defaults and every nested key are validated independen
   for (const value of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) assert.equal(trajectoryOptions({ thinkingLevel: value }).thinkingLevel, value);
   for (const value of ['', 'typo', null, 1]) assert.throws(() => trajectoryOptions({ thinkingLevel: value }), /thinkingLevel/);
   for (const value of ['', 'provider/', '/model', 'model-only', null]) assert.throws(() => trajectoryOptions({ model: value }), /model/);
+  for (const value of ['x', [1], [''], [null], null, 3]) {
+    assert.throws(() => recommendationOptions({ disableForCwd: value }), /disableForCwd/);
+    assert.throws(() => trajectoryOptions({ disableForCwd: value }), /disableForCwd/);
+  }
+  assert.deepEqual(recommendationOptions({ disableForCwd: ['~/work', 'D:/tmp'] }).disableForCwd, ['~/work', 'D:/tmp'], 'entries stay verbatim');
+});
+
+test('disableForCwd matching normalizes tilde, relative and absolute path forms', () => {
+  if (process.platform === 'win32') {
+    assert.equal(cwdKey('D:/A\\B/'), 'd:\\a\\b');
+    assert.ok(cwdDisabled(['d:/a/b'], 'D:\\A\\B'));
+    assert.ok(cwdDisabled(['C:/a/b/'], 'c:\\a\\b\\.'));
+  } else {
+    assert.equal(cwdKey('/tmp/x//'), '/tmp/x');
+    assert.ok(cwdDisabled(['/tmp/x/'], '/tmp/x'));
+  }
+  assert.ok(cwdDisabled(['~/work'], path.join(homedir(), 'work')));
+  assert.ok(cwdDisabled(['~'], homedir()));
+  assert.ok(cwdDisabled(['work/sub'], path.join(process.cwd(), 'work', 'sub')));
+  assert.ok(cwdDisabled([path.join(process.cwd(), 'work')], 'work/../work'));
+  assert.ok(!cwdDisabled([path.join(process.cwd(), 'work')], path.join(process.cwd(), 'work', 'sub')), 'subdirectory is not the listed root');
+  assert.ok(!cwdDisabled([], homedir()) && !cwdDisabled(['~/work'], undefined));
 });
 
 test('unavailable recommendation model degrades without changing the trajectory model', async () => {
@@ -135,6 +157,37 @@ test('unavailable recommendation model degrades without changing the trajectory 
   assert.match(out.messages[0]?.details.routingError, /catalog-provider\/vendor\/recommender/);
   await f.s.handlers.turn_end({}, f.ctx);
   assert.deepEqual(f.requests, [config.trajectory.model]);
+});
+
+test('disableForCwd skips preparation and periodic review for matching sessions', async () => {
+  const blocked = { ...config,
+    recommendation: { ...config.recommendation, disableForCwd: [cwd] },
+    trajectory: { ...config.trajectory, disableForCwd: [cwd] } };
+  const f = fixture(blocked);
+  await f.input();
+  const out = await f.s.handlers.context({ messages: [] }, f.ctx);
+  assert.deepEqual(out.messages, [], 'no preparation message is projected');
+  await f.s.handlers.turn_end({}, f.ctx);
+  assert.deepEqual(f.selected, [], 'neither stage reaches a model');
+  const input = f.s.diagnostics.find(e => e.data.event === 'input');
+  assert.equal(input.data.preparation, 'disabled-by-cwd');
+  assert.equal(input.data.cwd, cwd);
+  const gate = f.s.diagnostics.find(e => e.data.event === 'gate');
+  assert.equal(gate.data.reason, 'disabled-by-cwd');
+  assert.equal(gate.data.cwd, cwd);
+  // A listed path must not block other roots; both stages run normally there.
+  const other = fixture({ ...blocked,
+    recommendation: { ...blocked.recommendation, disableForCwd: [path.join(cwd, 'other')] },
+    trajectory: { ...blocked.trajectory, disableForCwd: [path.join(cwd, 'other')] } });
+  await other.input();
+  await other.s.handlers.context({ messages: [] }, other.ctx);
+  await other.s.handlers.turn_end({}, other.ctx);
+  assert.deepEqual(other.selected, [
+    { model: config.recommendation.model, thinkingLevel: 'low' },
+    { model: config.trajectory.model, thinkingLevel: 'off' },
+  ]);
+  assert.equal(other.s.diagnostics.find(e => e.data.event === 'input').data.preparation, 'scheduled');
+  assert.equal(other.s.diagnostics.find(e => e.data.event === 'gate').data.reason, 'due');
 });
 
 test('both README configuration examples use the same valid two-group contract', () => {

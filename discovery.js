@@ -5,7 +5,7 @@ import { parse } from 'yaml';
 import { routeCapabilities } from './router.js';
 import { directoryHint, fullCatalogFallback } from './catalog.js';
 import { PREFETCH_TYPE, projectPrefetch, runPrefetch } from './prefetch.js';
-import { discoveryOptions } from './config.js';
+import { cwdDisabled, discoveryOptions } from './config.js';
 import { runTrajectoryReview } from './observer.js';
 import { executionTrajectory, recommendationQuery, preparationContext } from './trajectory.js';
 
@@ -226,11 +226,13 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
       ctx.ui.notify(error.message, 'warning'); return;
     }
     const options = configuredOptions.trajectory;
+    const cwdBlocked = cwdDisabled(options.disableForCwd, ctx?.cwd);
     const reason = ctx.signal?.aborted ? 'cancelled' : !options.enabled ? 'disabled'
-      : !options.everySteps ? 'zero-interval'
-        : ++steps < options.everySteps ? 'below-interval' : 'due';
+      : cwdBlocked ? 'disabled-by-cwd'
+        : !options.everySteps ? 'zero-interval'
+          : ++steps < options.everySteps ? 'below-interval' : 'due';
     diagnostic(ctx, { trigger: 'periodic', event: 'gate', reason, steps,
-      enabled: options.enabled, interval: options.everySteps });
+      enabled: options.enabled, interval: options.everySteps, ...(cwdBlocked ? { cwd: ctx?.cwd } : {}) });
     if (reason !== 'due') return;
     steps = 0;
     const result = await atBoundary('periodic', options, ctx, async ({ signal, trace }) => review({
@@ -304,10 +306,12 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
           ctx.ui.notify(error.message, 'warning'); return output;
         }
         const preparation = configuredOptions.recommendation;
+        const cwdBlocked = cwdDisabled(preparation.disableForCwd, ctx?.cwd);
         const preparationDecision = !preparation.capabilityPrediction && !preparation.actionPrediction ? 'disabled'
-          : !event.prompt?.trim() && !event.images?.length ? 'empty-input' : 'scheduled';
+          : cwdBlocked ? 'disabled-by-cwd'
+            : !event.prompt?.trim() && !event.images?.length ? 'empty-input' : 'scheduled';
         diagnostic(ctx, { trigger: 'user-input', event: 'input', resetFromSteps,
-          configuredOptions, preparation: preparationDecision });
+          configuredOptions, preparation: preparationDecision, ...(cwdBlocked ? { cwd: ctx?.cwd } : {}) });
         if (preparationDecision !== 'scheduled') return output;
         // Pending services remain discoverable without connecting or activating them.
         preparationRun = { id: randomUUID(), inputId, controller: new AbortController(),

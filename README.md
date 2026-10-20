@@ -38,14 +38,16 @@ Trajectory-related features additionally require pi-snap **≥0.5.0** on `PATH` 
       "maxSuggestedActions": 3,
       "thinkingLevel": "low",
       "toolSearchThinkingLevel": "medium",
-      "timeoutMs": 60000
+      "timeoutMs": 60000,
+      "disableForCwd": []
     },
     "trajectory": {
       "model": "zai-coding-cn/glm-5.3-flash",
       "enabled": true,
       "everySteps": 15,
       "thinkingLevel": "low",
-      "timeoutMs": 120000
+      "timeoutMs": 120000,
+      "disableForCwd": ["D:/work/experiments"]
     }
   }
 }
@@ -66,14 +68,17 @@ All keys are optional. This table lists every supported key and its default.
 | recommendation | `thinkingLevel` | `"medium"` | Thinking level for automatic capability/action prediction |
 | recommendation | `toolSearchThinkingLevel` | `"medium"` | Thinking level for explicit semantic search |
 | recommendation | `timeoutMs` | `60000` | Preparation boundary budget in ms; integer 1000–600000 |
+| recommendation | `disableForCwd` | `[]` | Skip preparation for sessions whose CWD is listed; array of path strings |
 | trajectory | `model` | `"llama/iq3"` | `provider/model` for periodic trajectory warnings |
 | trajectory | `enabled` | `false` | Enable periodic trajectory warnings; boolean |
 | trajectory | `everySteps` | `5` | Warning interval; integer 0–1000, 0 disables periodic review |
 | trajectory | `thinkingLevel` | `"medium"` | Thinking level for trajectory warnings |
 | trajectory | `timeoutMs` | `60000` | Review boundary budget in ms; integer 1000–600000 |
+| trajectory | `disableForCwd` | `[]` | Skip periodic review for sessions whose CWD is listed; array of path strings |
 
 - `model` must be a nonempty `provider/model` string without whitespace. Only the first `/` separates the provider, so model IDs such as `vendor/model` are supported. The model must be configured in Pi; currently only `openai-completions` APIs are supported.
 - All three thinking-level fields accept `off/minimal/low/medium/high/xhigh/max`. Mapping depends on the selected model, independently of the main session's thinking level.
+- `disableForCwd` lists project roots where the stage performs no model work: preparation logs `disabled-by-cwd` at the input gate, review logs `disabled-by-cwd` at the step gate. Entries accept absolute paths, `~/`-prefixed paths, or relative paths (resolved against the Pi process CWD). `/` and `\` are interchangeable, and `.`/`..`, duplicate or trailing separators are normalized; on Windows, letter case is ignored. Matching is exact directory identity — a listed root does not cover its subdirectories, and the two stages gate independently. Manual `tool_search` is not affected.
 - The example keeps both stages on the same model to preserve the previous configuration's intent; change either independently. `tool_search` belongs to recommendation, not a third model stage; disabling automatic prediction does not disable manual search.
 - **The old flat format is rejected, not automatically migrated.** Combine `provider` + `model` into each group's `model`; move capability/action switches and the action cap into recommendation; split `autoRecommendThinkingLevel` into each group's `thinkingLevel`; move `toolSearchThinkingLevel` into recommendation. Rename `trajectoryWarnings` to `trajectory.enabled` and `trajectoryWarningEverySteps` to `trajectory.everySteps`. Legacy keys, wrong nesting, unknown keys, and invalid values fail explicitly rather than being silently ignored.
 

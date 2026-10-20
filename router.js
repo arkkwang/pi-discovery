@@ -1,10 +1,9 @@
 import { renderCapabilities } from './prompts.js';
-import { thinkingLevel, parseModel, recommendationOptions } from './config.js';
+import { parseModel, toolSearchOptions } from './config.js';
 
 // One classification request. Only IDs/scores come from the model.
-export async function routeCapabilities(query, catalog, registry, signal, thinking = 'medium', options = {}) {
-  thinkingLevel(thinking);
-  const label = recommendationOptions(options).model;
+export async function routeCapabilities(query, catalog, registry, signal, options = {}) {
+  const { model: label, thinkingLevel: thinking } = toolSearchOptions(options);
   const selectedModel = parseModel(label);
   const model = registry?.find(selectedModel.provider, selectedModel.id);
   if (!model) throw new Error(`${label} is not configured.`);

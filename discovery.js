@@ -212,7 +212,7 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
     // This boundary owns the caller signal. An internal deadline may degrade, but
     // a cancelled/invalidated preparation must never turn into a late directory.
     if (result.fallback) return result;
-    if (options.capabilityPrediction && (result.routingError || result.failure)) {
+    if (result.routingError || result.failure) {
       return { prefetch: { version: 2, requests: 0, reads: 0, rounds: [], failure: result.failure },
         ...result, ...fullCatalogFallback(catalog, result.routingError ?? result.error ?? result.failure) };
     }
@@ -268,11 +268,16 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
       pi.on(name, name !== 'before_agent_start' ? handler : async (event, ctx) => {
         invalidatePreparation();
         const output = await handler(event, ctx);
+        // Input identity and snapshots belong to this input even if its settings
+        // are invalid. Recovery must never reuse the previous request or counter.
+        const resetFromSteps = steps;
+        steps = 0;
+        inputId = randomUUID();
+        currentPrompt = event.prompt ?? '';
         const options = event.systemPromptOptions;
         skills = options.skills.filter(s => !s.disableModelInvocation)
           .map(s => ({ type: 'skill', name: s.name, description: s.description, path: s.filePath }))
           .sort((a, b) => a.name.localeCompare(b.name));
-        options.skills = [];
         // Reuse the host's bounded directory, including services still connecting. Do not
         // reconstruct it from registered tools (that would omit pending/failed services).
         const mcpLines = (options.sections.mcp_servers ?? '').split('\n')
@@ -283,21 +288,8 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
           const match = line.match(/^- (mcp__[^: ]+)(?::\s*(.*))?$/);
           return match ? [[match[1], { type: 'mcp', name: match[1], description: match[2] || `MCP service ${match[1]}` }]] : [];
         })).values()];
-        delete options.sections.mcp_servers;
-        delete options.sections.pi_discovery;
-        const deferred = toolCapabilities(pi.getAllTools());
-        options.sections.available_capabilities = skills.length || mcpLines.length || deferred.length
-          ? '统一发现入口：用 tool_search 按任务描述或名称发现 Skill、MCP 及其他延迟工具。query="*" 列出能力。\n'
-            + 'Skill 是做事方法：找到后读取正文再执行；MCP 提供工具：搜索会沿宿主机制加载匹配工具，下一次调用可用。推荐可能遗漏，不代表执行授权。\n'
-            + (skills.length ? '\nSkills\n' + skills.map(s => `- ${s.name} — ${catalogDescription(s).replace(/\s+/g, ' ').trim()}`).join('\n') : '')
-            + (mcpLines.length ? '\n\nMCP\n' + mcpLines.join('\n') : '')
-            // Names only: full descriptions arrive with the loaded tool schema; the routing catalog keeps them.
-            + (deferred.length ? '\n\nDeferred tools\n' + deferred.map(t => `- ${t.name}`).join('\n') : '')
-          : '';
-        const resetFromSteps = steps;
-        steps = 0;
-        inputId = randomUUID();
-        currentPrompt = event.prompt ?? '';
+        // Parse before any prompt mutation: invalid settings leave the native
+        // directory, the native tool_search and only a warning behind.
         let configuredOptions;
         try { configuredOptions = discoveryOptions(pi.getSettings().capabilityDiscovery); }
         catch (error) {
@@ -305,9 +297,23 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
             preparation: 'invalid-settings', error: error.message });
           ctx.ui.notify(error.message, 'warning'); return output;
         }
+        const deferred = toolCapabilities(pi.getAllTools());
+        if (configuredOptions.toolSearch.enabled) {
+          options.skills = [];
+          delete options.sections.mcp_servers;
+          delete options.sections.pi_discovery;
+          options.sections.available_capabilities = skills.length || mcpLines.length || deferred.length
+            ? '统一发现入口：用 tool_search 按任务描述或名称发现 Skill、MCP 及其他延迟工具。query="*" 列出能力。\n'
+              + 'Skill 是做事方法：找到后读取正文再执行；MCP 提供工具：搜索会沿宿主机制加载匹配工具，下一次调用可用。推荐可能遗漏，不代表执行授权。\n'
+              + (skills.length ? '\nSkills\n' + skills.map(s => `- ${s.name} — ${catalogDescription(s).replace(/\s+/g, ' ').trim()}`).join('\n') : '')
+              + (mcpLines.length ? '\n\nMCP\n' + mcpLines.join('\n') : '')
+              // Names only: full descriptions arrive with the loaded tool schema; the routing catalog keeps them.
+              + (deferred.length ? '\n\nDeferred tools\n' + deferred.map(t => `- ${t.name}`).join('\n') : '')
+            : '';
+        }
         const preparation = configuredOptions.recommendation;
         const cwdBlocked = cwdDisabled(preparation.disableForCwd, ctx?.cwd);
-        const preparationDecision = !preparation.capabilityPrediction && !preparation.actionPrediction ? 'disabled'
+        const preparationDecision = !preparation.enabled ? 'disabled'
           : cwdBlocked ? 'disabled-by-cwd'
             : !event.prompt?.trim() && !event.images?.length ? 'empty-input' : 'scheduled';
         diagnostic(ctx, { trigger: 'user-input', event: 'input', resetFromSteps,
@@ -325,9 +331,14 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
 
   const discovery = {
     ...native,
-    description: 'Unified discovery for Skills, MCP services and deferred tools. Describe the task to get relevant Skills and load matching tools in one call. Exact Skill, MCP namespace or tool names bypass the routing model; query="*" lists capabilities without loading. Read returned Skill paths before acting. MCP tool loading uses the host mechanism and takes effect on the next model call. Use this entry for Skill and MCP discovery.',
-    promptSnippet: 'Discover Skills and MCP/tools; read Skill files and use loaded tools',
-    async execute(id, { query, limit = 8 }, signal, onUpdate, ctx) {
+    // Keep native metadata/schema. The enabled prompt directory describes the
+    // additional Skill discovery; disabled calls delegate without altering arguments.
+    async execute(id, args, signal, onUpdate, ctx) {
+      let options;
+      try { options = discoveryOptions(pi.getSettings().capabilityDiscovery).toolSearch; }
+      catch { return native.execute(id, args, signal, onUpdate, ctx); }
+      if (!options.enabled) return native.execute(id, args, signal, onUpdate, ctx);
+      const { query, limit = 8 } = args;
       if (typeof query !== 'string' || !query.trim()) throw new Error('query must not be empty');
       if (!Number.isInteger(limit) || limit <= 0) throw new Error('limit must be a positive integer');
       signal?.throwIfAborted();
@@ -342,8 +353,8 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         if (mode === 'list' || mode === 'exact') {
           suggestions = (mode === 'list' ? catalog : exact).map(c => ({ ...c, confidence: null }));
         } else if (catalog.length) {
-          const options = discoveryOptions(pi.getSettings().capabilityDiscovery).recommendation;
-          suggestions = await routeCapabilities(task, catalog, ctx?.modelRegistry, signal, options.toolSearchThinkingLevel, options);
+          suggestions = await routeCapabilities(task, catalog, ctx?.modelRegistry, signal,
+            options);
         } else suggestions = [];
       } catch (error) {
         signal?.throwIfAborted();
@@ -377,6 +388,8 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
       });
     },
   };
+  // getSettings is unavailable during extension loading. Register one native-shaped
+  // entry and choose native vs smart execution only after the runtime is bound.
   pi.registerTool(discovery);
 }
 

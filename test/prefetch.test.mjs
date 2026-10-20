@@ -10,58 +10,58 @@ import { readPathKey } from '../trajectory.js';
 import { setup, sdkDepDir } from './helpers.mjs';
 import { projectPrefetch, runPrefetch, validatePrediction, PREFETCH_TYPE } from '../prefetch.js';
 import { projectIndex, skillFileIndex } from '../context-index.js';
-import { recommendationOptions, trajectoryOptions } from '../config.js';
+import { recommendationOptions, toolSearchOptions, trajectoryOptions } from '../config.js';
 const root = process.env.PI_DISCOVERY_SDK_ROOT;
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const answer = value => ({ role: 'assistant', content: [{ type: 'text', text: JSON.stringify(value) }],
   provider: 'llama', model: 'iq3', api: 'openai-completions', usage, timestamp: Date.now(), stopReason: 'stop' });
 
 test('invalid prediction items are dropped without aborting valid ones', () => {
-  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 0, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
-  assert.deepEqual(recommendationOptions(), { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
-  assert.deepEqual(recommendationOptions({ capabilityPrediction: true, timeoutMs: 120_000 }), { model: 'llama/iq3', capabilityPrediction: true, actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 120_000, disableForCwd: [] });
+  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { enabled: false, model: 'llama/iq3', actionPrediction: false, maxSuggestedActions: 0, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
+  assert.deepEqual(recommendationOptions(), { enabled: false, model: 'llama/iq3', actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
+  assert.deepEqual(recommendationOptions({ enabled: true, actionPrediction: true, timeoutMs: 120_000 }), { enabled: true, model: 'llama/iq3', actionPrediction: true, maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 120_000, disableForCwd: [] });
   for (const config of [{ prefetch: { maxSuggestedActions: 3 } }, { autoRecommend: 'true' }, { maxSuggestedActions: null }, { maxRunRounds: 3, maxRecommendedRounds: 2 }, { maxSuggestedActions: -1 }, { maxSuggestedActions: 9 }, { timeoutMs: 999 }, { timeoutMs: 600_001 }, { timeoutMs: '60000' }, null]) assert.throws(() => recommendationOptions(config));
   const catalog = [{ type: 'skill', name: 'test' }], files = [{ path: '/skill/SKILL.md' }];
-  const opts = { actionPrediction: true, maxSuggestedActions: 3 };
+  const opts = { enabled: true, actionPrediction: true, maxSuggestedActions: 3 };
   const kept = { tool: 'bash', arguments: { command: 'pwd' } };
   for (const command of ['', '   ', 42, 'x'.repeat(2001), 'a\0b']) {
-    const result = validatePrediction({ actions: [{ tool: 'bash', arguments: { command } }, kept] }, catalog, files, opts);
+    const result = validatePrediction({ suggestions: [], actions: [{ tool: 'bash', arguments: { command } }, kept] }, catalog, files, opts);
     assert.deepEqual(result.actions, [kept]);
     assert.deepEqual(result.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'bash', arguments: { command } } }]);
   }
-  assert.deepEqual(validatePrediction({ actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }] }, catalog, files, opts),
+  assert.deepEqual(validatePrediction({ suggestions: [], actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }] }, catalog, files, opts),
     { suggestions: [], actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }], dropped: [] });
   const read = { tool: 'read', arguments: { path: '/skill/SKILL.md' } };
-  const outside = validatePrediction({ actions: [{ tool: 'read', arguments: { path: '/secret' } }, read] }, catalog, files, opts);
+  const outside = validatePrediction({ suggestions: [], actions: [{ tool: 'read', arguments: { path: '/secret' } }, read] }, catalog, files, opts);
   assert.deepEqual(outside.actions, [read]);
   assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'read', arguments: { path: '/secret' } } }]);
-  assert.equal(validatePrediction({ actions: [kept, kept] }, catalog, files, opts).actions.length, 1);
-  const overBudget = validatePrediction({ actions: [kept, { tool: 'bash', arguments: { command: 'ls' } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 1 });
+  assert.equal(validatePrediction({ suggestions: [], actions: [kept, kept] }, catalog, files, opts).actions.length, 1);
+  const overBudget = validatePrediction({ suggestions: [], actions: [kept, { tool: 'bash', arguments: { command: 'ls' } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 1 });
   assert.deepEqual(overBudget.actions, [kept]);
   assert.deepEqual(overBudget.dropped, [{ kind: 'action', reason: 'over-budget', item: { tool: 'bash', arguments: { command: 'ls' } } }]);
-  assert.deepEqual(validatePrediction({ actions: [kept] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 0 }),
+  assert.deepEqual(validatePrediction({ suggestions: [], actions: [kept] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 0 }),
     { suggestions: [], actions: [], dropped: [{ kind: 'action', reason: 'over-budget', item: kept }] });
-  const flattened = validatePrediction({ actions: [{ tool: 'bash', command: 'pwd' }, { tool: 'read', path: '/skill/SKILL.md' }] }, catalog, files, opts);
+  const flattened = validatePrediction({ suggestions: [], actions: [{ tool: 'bash', command: 'pwd' }, { tool: 'read', path: '/skill/SKILL.md' }] }, catalog, files, opts);
   assert.deepEqual(flattened.actions, []);
   assert.equal(flattened.dropped.length, 2);
-  assert.deepEqual(validatePrediction({ suggestions: [{ id: 'skill:test', confidence: 0.9 }, { id: 'unknown', confidence: 1 }, { id: 'skill:test', confidence: 2 }] }, catalog, files, { capabilityPrediction: true }).suggestions,
+  assert.deepEqual(validatePrediction({ suggestions: [{ id: 'skill:test', confidence: 0.9 }, { id: 'unknown', confidence: 1 }, { id: 'skill:test', confidence: 2 }] }, catalog, files, {}).suggestions,
     [{ type: 'skill', name: 'test', confidence: 0.9 }]);
 });
 
-test('disabled output fields cannot leak valid capabilities or dispatch actions', () => {
+test('capability suggestions are always validated; actions remain optional', () => {
   const catalog = [{ type: 'skill', name: 'test' }];
   const action = { tool: 'bash', arguments: { command: 'pwd' } };
   const suggestion = { id: 'skill:test', confidence: 1 };
   const value = { suggestions: [suggestion], actions: [action] };
-  const actionsOnly = validatePrediction(value, catalog, [], { actionPrediction: true });
-  assert.deepEqual(actionsOnly.suggestions, []);
-  assert.deepEqual(actionsOnly.actions, [action]);
-  const capabilitiesOnly = validatePrediction(value, catalog, [], { capabilityPrediction: true });
+  const withActions = validatePrediction(value, catalog, [], { actionPrediction: true });
+  assert.deepEqual(withActions.suggestions, [{ ...catalog[0], confidence: 1 }]);
+  assert.deepEqual(withActions.actions, [action]);
+  const capabilitiesOnly = validatePrediction(value, catalog, [], { enabled: true });
   assert.deepEqual(capabilitiesOnly.actions, []);
   assert.equal(capabilitiesOnly.suggestions.length, 1);
   assert.deepEqual(capabilitiesOnly.dropped, [{ kind: 'field', reason: 'unknown-field', item: 'actions' }]);
   const disabled = validatePrediction(value, catalog, []);
-  assert.deepEqual(disabled.suggestions, []);
+  assert.deepEqual(disabled.suggestions, [{ ...catalog[0], confidence: 1 }]);
   assert.deepEqual(disabled.actions, []);
 });
 
@@ -146,7 +146,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     } };
     const ctx = { cwd, modelRegistry: registry, sessionManager: parent, ui: { notify() {} } };
     const args = { sdk: sdkFixture, query: 'prepare', catalog: [{ type: 'skill', name: 'test', description: 'Test documents', path: file }],
-      ctx, options: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 3 }, signal: AbortSignal.timeout(15000) };
+      ctx, options: { enabled: true, actionPrediction: true, maxSuggestedActions: 3 }, signal: AbortSignal.timeout(15000) };
     const result = await runPrefetch(args);
     assert.equal(predictions, 1); assert.equal(result.prefetch.failure, undefined);
     assert.equal(result.prefetch.rounds.length, 2);
@@ -209,7 +209,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(predictions, beforeWarnings, 'preparation never runs trajectory analysis');
     assert.equal(disabled.prefetch.requests, 0);
     value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [] };
-    const capabilityOnly = await runPrefetch({ ...args, options: { capabilityPrediction: true } });
+    const capabilityOnly = await runPrefetch({ ...args, options: { enabled: true } });
     assert.equal(capabilityOnly.prefetch.failure, undefined);
     assert.equal(capabilityOnly.diagnostics.tree.entries, 0);
     assert.notEqual(capabilityOnly.diagnostics.discoverySessionFile, result.diagnostics.discoverySessionFile);
@@ -217,9 +217,11 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.doesNotMatch(observedSystem, /## Preparation actions|## Trajectory warnings/);
     expectedLimit = 3;
     value = { suggestions: [], actions: [] };
-    const actionOnly = await runPrefetch({ ...args, options: { actionPrediction: true } });
-    assert.equal(actionOnly.prefetch.failure, undefined);
-    assert.doesNotMatch(observedSystem, /## Capability suggestions|## Trajectory warnings/);
+    const withActions = await runPrefetch({ ...args, options: { enabled: true, actionPrediction: true } });
+    assert.equal(withActions.prefetch.failure, undefined);
+    assert.match(observedSystem, /## Capability suggestions/);
+    assert.match(observedSystem, /## Preparation actions/);
+    assert.doesNotMatch(observedSystem, /## Trajectory warnings/);
     value = initialValue;
 
     // A projected full read suppresses host calls, not just their display.
@@ -271,7 +273,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
         { name: 'subagent_start', exposure: 'codemode', description: 'Delegate a task' },
         { name: 'hidden_tool', exposure: 'hidden', description: 'Not available' }],
       sections: { mcp_servers: '- mcp__pending (tool_search): Pending service\n- mcp__undescribed (codemode)\n- mcp__ready (tool_search): Ready service' },
-      settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 3 } } },
+      settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: 3 } } },
       mcpWait: () => assert.fail('must not wait for MCP') });
     const accepted = await hook.handlers.before_agent_start({ prompt: 'prepare', systemPromptOptions: {
       skills: [{ name: 'test', description: 'Test', filePath: file }], sections: {} } }, ctx);
@@ -303,7 +305,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
 
     expectedLimit = 0;
     value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [] };
-    const zero = setup({ sdk: sdkFixture, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 0 } } },
+    const zero = setup({ sdk: sdkFixture, settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: 0 } } },
       mcpWait: () => assert.fail('zero-action mode must not wait for MCP') });
     const zeroEvent = { prompt: 'recommend only', systemPromptOptions: { skills: [{ name: 'test', description: 'Test', filePath: file }], sections: {} } };
     assert.equal(await zero.handlers.before_agent_start(zeroEvent, ctx), undefined);
@@ -324,7 +326,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     for (const level of ['off', 'low', 'high']) {
       expectedThinking = level === 'off' ? undefined : level;
       const configured = await runPrefetch({ ...args, options: { ...args.options,
-        thinkingLevel: level, toolSearchThinkingLevel: 'medium' } });
+        thinkingLevel: level } });
       assert.equal(configured.prefetch.failure, undefined);
     }
     expectedThinking = 'medium';
@@ -375,7 +377,7 @@ test('live IQ3 through the full discovery entry includes configured MCP metadata
       const hook = setup({ sdk: liveSdk, sections: { mcp_servers: section },
         tools: [{ name: 'notify', exposure: 'deferred', description: 'Send a notification to the user when work finishes' },
           { name: 'subagent_start', exposure: 'codemode', description: 'Start a subagent for independent review or delegated work' }],
-        settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: recommendationOnly ? 0 : 3 } } },
+        settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: recommendationOnly ? 0 : 3 } } },
         mcpWait: () => assert.fail('metadata-only recommendation must not wait for MCP') });
       const append = hook.pi.appendEntry;
       hook.pi.appendEntry = (type, data) => { append(type, data); parent.appendCustomEntry(type, data); };
@@ -415,11 +417,11 @@ test('live IQ3 through the full discovery entry includes configured MCP metadata
 test('thinking settings validate independently and preserve all supported levels', () => {
   for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
     assert.equal(recommendationOptions({ thinkingLevel: level }).thinkingLevel, level);
-    assert.equal(recommendationOptions({ toolSearchThinkingLevel: level }).toolSearchThinkingLevel, level);
+    assert.equal(toolSearchOptions({ thinkingLevel: level }).thinkingLevel, level);
   }
-  for (const key of ['thinkingLevel', 'toolSearchThinkingLevel']) {
+  for (const parse of [recommendationOptions, toolSearchOptions]) {
     for (const value of [null, false, 1, '', 'Medium', 'typo']) {
-      assert.throws(() => recommendationOptions({ [key]: value }), new RegExp(key));
+      assert.throws(() => parse({ thinkingLevel: value }), /thinkingLevel/);
     }
   }
 });
@@ -437,16 +439,16 @@ test('boundary budgets are configurable per option group', () => {
 test('malformed predictions degrade per item; warnings never enter preparation output', () => {
   assert.deepEqual(validatePrediction(null, [], []), { suggestions: [], actions: [], dropped: [{ kind: 'response', reason: 'not-an-object' }] });
   const result = validatePrediction({ suggestions: [], actions: [], warnings: [] }, [], [],
-    { capabilityPrediction: true, actionPrediction: true });
+    { actionPrediction: true });
   assert.deepEqual(result, { suggestions: [], actions: [], dropped: [{ kind: 'field', reason: 'unknown-field', item: 'warnings' }] });
-  const missing = validatePrediction({ suggestions: [{ id: 'unknown', confidence: 1 }] }, [], [], { capabilityPrediction: true, actionPrediction: true });
+  const missing = validatePrediction({ suggestions: [{ id: 'unknown', confidence: 1 }] }, [], [], { actionPrediction: true });
   assert.deepEqual(missing.suggestions, []);
   assert.deepEqual(missing.dropped.filter(d => d.reason === 'invalid-capability').length, 1);
   assert.deepEqual(missing.dropped.filter(d => d.reason === 'missing-field' && d.kind === 'action').length, 1);
-  const outside = validatePrediction({ actions: [{ tool: 'read', arguments: { path: '/outside' } }] }, [], [], { actionPrediction: true });
+  const outside = validatePrediction({ suggestions: [], actions: [{ tool: 'read', arguments: { path: '/outside' } }] }, [], [], { actionPrediction: true });
   assert.deepEqual(outside.actions, []);
   assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'read', arguments: { path: '/outside' } } }]);
-  const malformed = validatePrediction({ suggestions: 'all skills', actions: 42 }, [], [], { capabilityPrediction: true, actionPrediction: true });
+  const malformed = validatePrediction({ suggestions: 'all skills', actions: 42 }, [], [], { actionPrediction: true });
   assert.deepEqual(malformed.suggestions, []);
   assert.deepEqual(malformed.actions, []);
   assert.deepEqual(malformed.dropped.map(d => [d.kind, d.reason]).sort(), [['action', 'not-an-array'], ['suggestion', 'not-an-array']]);
@@ -467,5 +469,5 @@ test('all switches disabled makes zero requests; configured model rejects unsupp
     assert.equal(provider, 'custom'); assert.equal(model, 'chosen');
     return { api: 'anthropic-messages' };
   } } };
-  await assert.rejects(runPrefetch({ ctx, options: { model: 'custom/chosen', capabilityPrediction: true } }), /custom\/chosen.*only openai-completions/);
+  await assert.rejects(runPrefetch({ ctx, options: { model: 'custom/chosen', enabled: true } }), /custom\/chosen.*only openai-completions/);
 });

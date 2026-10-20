@@ -96,16 +96,16 @@ async function createHarness({ capabilityDiscovery, mainScript, predictResult })
 
 test('user input prepares capabilities/actions and never includes trajectory warnings', { skip: !sdkRoot || snapCliMissing, timeout: 120000 }, async () => {
   const h = await createHarness({
-    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', capabilityPrediction: true, actionPrediction: true }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 0 } },
+    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', enabled: true, actionPrediction: true }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 0 } },
     mainScript: [{ text: 'Prediction acknowledged.' }],
     predictResult: () => ({ suggestions: [{ type: 'skill', name: 'demo-skill', confidence: 0.9 }], warnings: [warning('input')] }),
   });
   try {
     await h.session.prompt('Please use demo-skill for the task');
     assert.equal(h.predicts.length, 1, `one predict for the user input: ${h.diagnostics()}`);
-    assert.equal(h.predicts[0].options.enabled, undefined);
-    for (const key of ['capabilityPrediction', 'actionPrediction'])
-      assert.equal(h.predicts[0].options[key], true, `${key} enabled in the shared predict`);
+    assert.equal(h.predicts[0].options.enabled, true);
+    assert.equal(h.predicts[0].options.actionPrediction, true);
+    assert.equal(h.predicts[0].options.everySteps, undefined, 'review controls do not leak into preparation');
     assert.ok(h.predicts[0].catalog.some(c => c.type === 'skill' && c.name === 'demo-skill'),
       'predict receives the real consolidated catalog');
     assert.match(h.predicts[0].query, /Please use demo-skill for the task/);
@@ -120,7 +120,8 @@ test('user input prepares capabilities/actions and never includes trajectory war
     const ready = diagnostics.find(e => e.data.event === 'context-ready');
     const start = diagnostics.find(e => e.data.event === 'start');
     assert.equal(input.data.configuredOptions.trajectory.enabled, true);
-    assert.equal(start.data.effectiveOptions.enabled, undefined);
+    assert.equal(start.data.effectiveOptions.enabled, true);
+    assert.equal(start.data.effectiveOptions.everySteps, undefined, 'review controls do not leak into preparation diagnostics');
     assert.equal(ready.data.inputId, input.data.inputId);
     assert.equal(ready.data.preparationId, prefetch[0].details.preparationId);
     assert.equal(ready.data.delivery, 'direct');
@@ -147,7 +148,7 @@ test('user input prepares capabilities/actions and never includes trajectory war
 
 test('turn_end periodic warning: one predict per completed round, persisted, visible, no forced continuation', { skip: !sdkRoot || snapCliMissing, timeout: 120000 }, async () => {
   const h = await createHarness({
-    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', capabilityPrediction: false, actionPrediction: false }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 1 } },
+    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', enabled: false }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 1 } },
     mainScript: [{ toolCall: true }, { text: 'All done.' }],
     predictResult: () => ({ warnings: [warning(`round-${h.predicts.length}`)] }),
   });
@@ -156,7 +157,6 @@ test('turn_end periodic warning: one predict per completed round, persisted, vis
     assert.equal(h.main.length, 2, 'exactly two main provider requests (tool call round, then final answer)');
     assert.equal(h.predicts.length, 2, `one predict per completed assistant+tools round: ${h.diagnostics()}`);
     for (const p of h.predicts) {
-      assert.equal(p.options.capabilityPrediction, undefined);
       assert.equal(p.options.actionPrediction, undefined);
       assert.equal(p.options.enabled, true, 'periodic review keeps warnings on');
       assert.ok(p.skills.some(s => s.name === 'demo-skill'));
@@ -206,7 +206,7 @@ test('turn_end periodic warning: one predict per completed round, persisted, vis
 
 test('everySteps interval defers the periodic predict to the second completed round', { skip: !sdkRoot || snapCliMissing, timeout: 120000 }, async () => {
   const h = await createHarness({
-    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', capabilityPrediction: false, actionPrediction: false }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 2 } },
+    capabilityDiscovery: { recommendation: { model: 'fixturepi/iq3', enabled: false }, trajectory: { model: 'fixturepi/iq3', enabled: true, everySteps: 2 } },
     mainScript: [{ toolCall: true }, { text: 'Finished.' }],
     predictResult: () => ({ warnings: [warning('later')] }),
   });
@@ -288,7 +288,7 @@ test('acceptance and session persistence precede a 10s recommendation; main mode
   const gate = new Promise(r => { release = r; });
   const started = new Promise(r => { entered = r; });
   const h = await createHarness({
-    capabilityDiscovery: { recommendation: { capabilityPrediction: true } },
+    capabilityDiscovery: { recommendation: { enabled: true } },
     mainScript: [{ toolCall: true }, { text: 'Done after tools.' }],
     predictResult: async () => { entered(); await gate; return { suggestions: [{ type: 'skill', name: 'AFTER_ACCEPTANCE', confidence: 1 }] }; },
   });
@@ -319,7 +319,7 @@ test('cancelled preparation cannot inject late results into the next input', { s
   const started = new Promise(r => { entered = r; });
   let n = 0;
   const h = await createHarness({
-    capabilityDiscovery: { recommendation: { capabilityPrediction: true } }, mainScript: [{ text: 'Next accepted.' }],
+    capabilityDiscovery: { recommendation: { enabled: true } }, mainScript: [{ text: 'Next accepted.' }],
     predictResult: async () => {
       const first = ++n === 1;
       if (first) { entered(); await gate; }

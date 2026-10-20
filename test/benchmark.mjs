@@ -52,7 +52,7 @@ const after = await measure(() => s.prompt());
 const promptAssembly = [];
 for (const count of [20, 1000]) {
   const catalog = Array.from({ length: count }, (_, n) => ({ type: 'skill', name: `skill-${n}`, description: 'Implement and verify changes. '.repeat(10), path: `/skills/${n}/SKILL.md` }));
-  const options = recommendationOptions({ capabilityPrediction: true, actionPrediction: true });
+  const options = recommendationOptions({ actionPrediction: true });
   const data = { catalog, options, schema: predictionSchema(catalog, catalog, options), cwd: '/project',
     tree: { entries: Array.from({ length: 200 }, (_, n) => `src/file-${n}.js`), maxDepth: 3, truncated: true },
     query: 'Current task and trajectory. '.repeat(300), rules: 'System and project rules. '.repeat(800),

@@ -5,12 +5,13 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 
-import { recommendationOptions, discoveryOptions, trajectoryOptions, parseModel, cwdKey, cwdDisabled } from '../config.js';
+import { recommendationOptions, discoveryOptions, toolSearchOptions, trajectoryOptions, parseModel, cwdKey, cwdDisabled } from '../config.js';
 
 const cwd = mkdtempSync(path.join(tmpdir(), 'discovery-stages-'));
 after(() => rmSync(cwd, { recursive: true, force: true }));
 const config = {
-  recommendation: { model: 'catalog-provider/vendor/recommender', capabilityPrediction: true, thinkingLevel: 'low', toolSearchThinkingLevel: 'high' },
+  toolSearch: { model: 'search-provider/router', thinkingLevel: 'high' },
+  recommendation: { enabled: true, model: 'catalog-provider/vendor/recommender', thinkingLevel: 'low' },
   trajectory: { model: 'review-provider/reviewer', enabled: true, everySteps: 1, thinkingLevel: 'off' },
 };
 
@@ -50,7 +51,7 @@ function fixture(value = config) {
   return { s, ctx, input, selected, requests, names, diagnostics };
 }
 
-test('grouped stages select independent models/thinking; manual search uses recommendation model', async t => {
+test('grouped stages select independent models/thinking; manual search uses its own model', async t => {
   const f = fixture(); await f.input();
   const out = await f.s.handlers.context({ messages: [] }, f.ctx);
   assert.equal(out.messages[0]?.details.suggestions[0]?.confidence, 1, 'normal prediction, not fallback');
@@ -68,9 +69,9 @@ test('grouped stages select independent models/thinking; manual search uses reco
   assert.equal(starts[1].effectiveOptions.model, config.trajectory.model);
   let searches = 0;
   t.mock.method(globalThis, 'fetch', async (url, options) => {
-    searches++; assert.equal(url, 'http://catalog-provider.invalid/v1/chat/completions');
+    searches++; assert.equal(url, 'http://search-provider.invalid/v1/chat/completions');
     const body = JSON.parse(options.body);
-    assert.equal(body.model, 'vendor/recommender');
+    assert.equal(body.model, 'router');
     assert.equal(body.chat_template_kwargs.reasoning_effort, 'high');
     return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"suggestions":[]}' } }] }));
   });
@@ -98,22 +99,25 @@ test('review-only setup does not run preparation; recommendation-only setup does
   }
 });
 
-test('only two root keys; defaults and every nested key are validated independently', () => {
+test('three root groups; defaults and every nested key are validated independently', () => {
   const defaults = discoveryOptions();
-  assert.deepEqual(Object.keys(defaults), ['recommendation', 'trajectory']);
-  assert.deepEqual(defaults.recommendation, { model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false,
-    maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
+  assert.deepEqual(Object.keys(defaults), ['toolSearch', 'recommendation', 'trajectory']);
+  assert.deepEqual(defaults.toolSearch, { enabled: true, model: 'llama/iq3', thinkingLevel: 'medium' });
+  assert.deepEqual(defaults.recommendation, { enabled: false, model: 'llama/iq3', actionPrediction: false,
+    maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
   assert.deepEqual(defaults.trajectory, { model: 'llama/iq3', enabled: false, everySteps: 5, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
   const changed = discoveryOptions({ recommendation: { model: 'custom/a', thinkingLevel: 'high' } });
   assert.deepEqual(changed.trajectory, defaults.trajectory, 'no cross-stage inheritance');
+  assert.deepEqual(changed.toolSearch, defaults.toolSearch, 'no cross-stage inheritance');
   assert.deepEqual(parseModel('provider/vendor/model'), { provider: 'provider', id: 'vendor/model' });
   for (const value of [null, [], true, { provider: 'p', model: 'm' }, { recommendationModel: 'p/m' },
-    { capabilityPrediction: true }, { trajectoryWarnings: true }, { recommendation: null }, { trajectory: [] },
-    { recommendation: { enabled: true } }, { trajectory: { actionPrediction: true } }]) {
+    { capabilityPrediction: true }, { recommendation: { capabilityPrediction: true } }, { trajectoryWarnings: true }, { recommendation: null }, { trajectory: [] },
+    { toolSearch: null }, { recommendation: { autoRecommend: true } }, { trajectory: { actionPrediction: true } },
+    { toolSearch: { searchThinkingLevel: 'low' } }]) {
     assert.throws(() => discoveryOptions(value), /accepts only/);
   }
   for (const value of [null, 0, 'true']) {
-    assert.throws(() => recommendationOptions({ capabilityPrediction: value }), /capabilityPrediction/);
+    assert.throws(() => recommendationOptions({ capabilityPrediction: value }), /accepts only/);
     assert.throws(() => recommendationOptions({ actionPrediction: value }), /actionPrediction/);
     assert.throws(() => trajectoryOptions({ enabled: value }), /enabled/);
   }
@@ -190,13 +194,27 @@ test('disableForCwd skips preparation and periodic review for matching sessions'
   assert.equal(other.s.diagnostics.find(e => e.data.event === 'gate').data.reason, 'due');
 });
 
-test('both README configuration examples use the same valid two-group contract', () => {
+test('both README configuration examples use the same valid three-group contract', () => {
   const examples = ['README.md', 'README.zh-CN.md'].map(name => {
     const text = readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
     const example = JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)[1]).capabilityDiscovery;
-    assert.deepEqual(Object.keys(example), ['recommendation', 'trajectory']);
+    assert.deepEqual(Object.keys(example), ['toolSearch', 'recommendation', 'trajectory']);
     assert.deepEqual(discoveryOptions(example), example, 'example lists every supported key explicitly');
     return example;
   });
   assert.deepEqual(examples[0], examples[1]);
+});
+
+test('toolSearch group and recommendation master switch parse and validate', () => {
+  assert.deepEqual(toolSearchOptions(), { enabled: true, model: 'llama/iq3', thinkingLevel: 'medium' });
+  assert.deepEqual(toolSearchOptions({ enabled: false, model: 'a/b', thinkingLevel: 'low' }),
+    { enabled: false, model: 'a/b', thinkingLevel: 'low' });
+  assert.throws(() => toolSearchOptions({ enabled: 'no' }), /capabilityDiscovery.toolSearch.enabled must be boolean/);
+  assert.throws(() => toolSearchOptions({ takeover: true }), /capabilityDiscovery.toolSearch accepts only enabled, model, thinkingLevel/);
+  assert.throws(() => toolSearchOptions({ model: 'no-slash' }), /capabilityDiscovery.toolSearch.model/);
+  assert.throws(() => toolSearchOptions({ thinkingLevel: 'typo' }), /capabilityDiscovery.toolSearch.thinkingLevel/);
+  assert.equal(discoveryOptions({ toolSearch: { enabled: false } }).toolSearch.enabled, false);
+  assert.equal(recommendationOptions().enabled, false);
+  assert.equal(recommendationOptions({ enabled: true }).enabled, true);
+  assert.throws(() => recommendationOptions({ enabled: 1 }), /capabilityDiscovery.recommendation.enabled must be boolean/);
 });

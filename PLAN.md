@@ -205,3 +205,52 @@ npm pack --dry-run --ignore-scripts --json
 - 最终现有 SDK 1.2.0 测试：103 tests，97 pass / 0 fail / 6 skipped，日志 `%TEMP%/pi-discovery-stages-sdk.log`。命令与上一切片相同，三个 LIVE 开关均为 0；仅 6 项真实模型测试跳过。
 - `git diff --check` 通过；`npm pack --dry-run --ignore-scripts --json` 确认 config.js/catalog.js 均进入包，清单 `%TEMP%/pi-discovery-stages-pack.json`。
 - 中英文 README 已同步完整配置、全部 10 个嵌套键、默认值/范围、旧格式迁移与诊断字段含义。未提交、发布、安装或重启。
+
+## 三功能独立配置组（当前切片）
+
+### 有效契约
+
+- 用户要求三个独立功能：智能 tool search、输入时推荐、执行时检查；模型、思考级别和开关各自配置。
+- `toolSearch`：`enabled` 默认 true，模型默认 llama/iq3，thinkingLevel 默认 medium。关闭时直接委托原生搜索，不改 Skill/MCP 提示词目录。
+- `recommendation`：`enabled` 默认 false；开启即推荐能力，删除 `capabilityPrediction`。`actionPrediction` 默认 false，仅作为附加动作开关，不能自行启用推荐。其余预算与目录禁用配置保留。
+- `trajectory`：配置和周期审查语义不变。
+- 旧 `recommendation.toolSearchThinkingLevel` 移为 `toolSearch.thinkingLevel`，路由模型用 `toolSearch.model`。旧键严格拒绝，双语 README 提供迁移说明；不修改用户 settings.json。
+- 本节覆盖上面历史切片的双组结构、capabilityPrediction/action-only 模式与默认值描述。
+
+### 宿主机制纠偏
+
+- 前一会话误以为可在注册时读配置并决定是否注册；真实 SDK loader 的 getSettings 此时会抛“runtime not initialized”，导致接管误关。现改为无条件注册原生形状入口，在 execute 时读取配置并选择原生/智能路径。
+- 保留原生 description、promptSnippet、schema 和 reachesTools；智能模式的额外 Skill 使用说明放在启用时的能力目录。关闭时原样传递调用参数、signal、onUpdate、ctx 与返回值。
+- 提示词随下一次输入读取配置；搜索随下一次调用读取配置，不再要求开关修改后重启。非法配置输入告警并保留原生提示词，搜索回原生实现。
+
+### 实现与验证
+
+- config/router/discovery/prefetch/prompts 与测试、双语 README 一并整理；能力输出恒有 suggestions，动作输出仍按 actionPrediction 控制。推荐关闭不发请求，动作失败不覆盖有效能力建议，取消与失效结果不投递。
+- 接续时默认测试有 7 处失败：过时 action-only 断言、缺 suggestions 的动作夹具、遗漏 enabled 与未更新的默认值/README。按当前契约修正，保留丢弃非法动作、预算、取消与回退断言。
+- 新增全关闭/配置非法的原生直通测试、运行时切换测试；真实 SDK 验证加载期不读配置、原生结果一致。三个不同模型的回归证明搜索不再借用推荐模型。
+- 验证结果见下方最终记录。未提交、推送、发布、改版本、修改全局配置或重启应用。
+
+### 最终验证记录（本机接续）
+
+- `npm test`：111 项，85 pass / 0 fail / 26 skip；日志 `/tmp/pi-discovery-test.log`。
+- `PI_DISCOVERY_SDK_ROOT=/Users/lei/.npm/_npx/2453649666e7772c/node_modules/@earendil-works/pi-coding-agent PI_DISCOVERY_LIVE=0 PI_DISCOVERY_PREFETCH_LIVE=0 PI_DISCOVERY_OBSERVER_LIVE=0 npm test`：111 项，93 pass / 0 fail / 18 skip；日志 `/tmp/pi-discovery-sdk-final.log`。18 项跳过包括 6 项真实模型测试与 12 项缺少相邻 pi-snap 源码目录的测试。
+- 额外指定本机已安装 `PI_SNAP_SOURCE=/Users/lei/.local/share/mise/installs/node/22.23.2/lib/node_modules/@arkkwang/pi-snap` 后：95 pass / 8 fail / 2 cancelled / 6 skip，日志 `/tmp/pi-discovery-sdk-test.log`。这是实际依赖不兼容，不能把跳过项说成通过。
+- 根因：`trajectory.js:173` 仍调用 `--view trace --max-chars 0`，本机 pi-snap 当前 CLI 不接受；`git show HEAD:trajectory.js` 确认本次修改之前已如此。本次未修改 trajectory.js 或 pi-snap。影响有历史消息时的推荐上下文准备与轨迹审查；需另行适配 CLI 与输出契约后补验完整集成。
+- `git diff --check` 通过。无真实模型调用、无配置安装、无提交/发布。
+
+### 独立 review 状态回归修复
+
+- 用户确认修复：新输入先取消旧准备、刷新输入 ID/当前请求/Skill 与声明 MCP 快照、重置步数，再校验配置并决定是否改写提示词或运行功能。
+- 修复 `before_agent_start` 非法配置提前返回导致旧状态残留的问题；未新增配置或状态机制。
+- 新回归 `invalid input refreshes state before settings recover without another input` 覆盖正常输入→累计一步→新输入配置非法→无新输入修正配置：验证原生提示词不变、不运行模型、新输入 ID、步数归零、审查使用新请求和 Skill、搜索使用新 Skill/MCP 目录。
+- 红灯：新增测试在修复前因 inputId 沿用旧值失败，日志 `/tmp/pi-discovery-state-red.log`。修复后 observer 14/14 通过，日志 `/tmp/pi-discovery-state-green.log`。
+- 使用上述 SDK 环境且三个 LIVE 开关为 0 的完整套件：112 项，94 pass / 0 fail / 18 skip，日志 `/tmp/pi-discovery-state-suite.log`；`git diff --check` 通过。原有 pi-snap 兼容阻碍与跳过范围不变。
+- 未提交、发布、修改用户配置或重启应用。
+
+### 本地 pi-snap 对齐与提交前验证
+
+- 用户授权将 `/Users/lei/workspace/program/personal/pi-snap` 执行 `npm link`。本地 0.6.0 支持 `--view trace --max-chars 0`；此前为实际安装版本与仓库预期不一致，无需修改 trajectory.js。上文所述 pi-snap 运行阻碍已解除。
+- 全量集成暴露最后一处过时断言：准备诊断的 `effectiveOptions.enabled` 仍期望 undefined。改为 true，并用 `everySteps === undefined` 保留“审查配置不泄漏到推荐”的验证。
+- 提交前命令：`PI_DISCOVERY_SDK_ROOT=/Users/lei/.npm/_npx/2453649666e7772c/node_modules/@earendil-works/pi-coding-agent PI_DISCOVERY_LIVE=0 PI_DISCOVERY_PREFETCH_LIVE=0 PI_DISCOVERY_OBSERVER_LIVE=0 npm test`。
+- 结果：112 项，106 pass / 0 fail / 0 cancelled / 6 skip；仅真实模型测试跳过。日志 `/tmp/pi-discovery-precommit.log`。
+- 用户授权提交本轮代码、测试和文档；仅本地提交，不推送或发布，不改版本。

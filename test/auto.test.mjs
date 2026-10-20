@@ -35,7 +35,7 @@ test('configured timeoutMs bounds the preparation boundary, its diagnostics and 
     if (signal.aborted) reject(signal.reason);
     else signal.addEventListener('abort', () => reject(signal.reason));
   });
-  const s = setup({ sdk: {}, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, timeoutMs: 5_000 } } },
+  const s = setup({ sdk: {}, settings: { capabilityDiscovery: { recommendation: { enabled: true, timeoutMs: 5_000 } } },
     register: (pi, deps) => registerDiscovery(pi, { ...deps, predict }) });
   const ctx = context();
   await before(s, ctx);
@@ -54,7 +54,7 @@ test('successful preparation records outcome, suggestions and child pointer in t
     prefetch: { version: 2, requests: 1, reads: 0, rounds: [] },
     diagnostics: { endReason: 'no-actions-needed', requests: 1, inferenceMs: 5,
       discoverySessionId: 'child-1', discoverySessionFile: '/tmp/child.jsonl' } });
-  const s = setup({ sdk: {}, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } },
+  const s = setup({ sdk: {}, settings: { capabilityDiscovery: { recommendation: { enabled: true } } },
     register: (pi, deps) => registerDiscovery(pi, { ...deps, predict }) });
   const ctx = context();
   await before(s, ctx);
@@ -98,7 +98,7 @@ test('invalid legacy configuration is rejected without a model call or MCP wait'
   assert.deepEqual(s.calls, ['mcp-prompt']);
 });
 test('enabled preparation setup failure does not block the user and omits sensitive diagnostics', async () => {
-  const s = setup({ settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } } });
+  const s = setup({ settings: { capabilityDiscovery: { recommendation: { enabled: true } } } });
   const ctx = context();
   assert.equal((await before(s, ctx, 'SECRET PROMPT')).output, undefined);
   assert.equal(ctx.notices.length, 1);
@@ -123,4 +123,72 @@ test('image-only input retains placeholders without transmitting image data', as
   const q = await recommendationQuery('', { getBranch: () => [] }, [{ type: 'image', data: 'SECRET' }]);
   assert.match(q, /\[image\]/);
   assert.doesNotMatch(q, /SECRET/);
+});
+
+test('discovery takeover off keeps native tool_search and the native prompt, prediction still runs', async () => {
+  let predicted = 0;
+  const predict = async () => { predicted++;
+    return { suggestions: [], prefetch: { version: 2, requests: 1, reads: 0, rounds: [] }, diagnostics: {} }; };
+  const s = setup({
+    sdk: {},
+    settings: { capabilityDiscovery: { toolSearch: { enabled: false }, recommendation: { enabled: true } } },
+    sections: { mcp_servers: '- mcp__exa: web search (tool_search): find their tools with searchTools()' },
+    register: (pi, deps) => registerDiscovery(pi, { ...deps, predict }) });
+  const options = { skills: [skill], sections: {} };
+  await s.handlers.before_agent_start({ prompt: 'task', systemPromptOptions: options }, context());
+  await s.handlers.context({ messages: [] }, context());
+  assert.ok(s.tool, 'entry delegates to native search when disabled');
+  await s.search({ query: 'native task' });
+  assert.deepEqual(s.calls.at(-1).args, { query: 'native task' });
+  assert.equal(options.skills.length, 1, 'native Skill directory survives');
+  assert.match(options.sections.mcp_servers, /mcp__exa/);
+  assert.equal(options.sections.available_capabilities, undefined);
+  assert.equal(predicted, 1, 'preparation is independent of takeover');
+  assert.equal(s.diagnostics.find(e => e.data.event === 'input').data.preparation, 'scheduled');
+});
+
+test('recommendation master switch disables preparation without touching takeover', async () => {
+  let predicted = 0;
+  const predict = async () => { predicted++;
+    return { suggestions: [], prefetch: { version: 2, requests: 1, reads: 0, rounds: [] }, diagnostics: {} }; };
+  const s = setup({
+    settings: { capabilityDiscovery: { recommendation: { enabled: false, actionPrediction: true } } },
+    register: (pi, deps) => registerDiscovery(pi, { ...deps, predict }) });
+  const options = { skills: [skill], sections: {} };
+  await s.handlers.before_agent_start({ prompt: 'task', systemPromptOptions: options }, context());
+  await s.handlers.context({ messages: [] }, context());
+  assert.equal(predicted, 0);
+  assert.equal(s.diagnostics.find(e => e.data.event === 'input').data.preparation, 'disabled');
+  assert.notEqual(s.tool, undefined, 'takeover is unaffected');
+  assert.equal(options.skills.length, 0);
+  assert.match(options.sections.available_capabilities, /统一发现入口/);
+});
+
+
+test('all groups off and invalid settings preserve native prompt and pass native calls through', async () => {
+  const settings = { capabilityDiscovery: { toolSearch: { enabled: false },
+    recommendation: { enabled: false, actionPrediction: true }, trajectory: { enabled: false } } };
+  const nativeResult = { content: [{ type: 'text', text: 'native result' }], details: { loaded: [] } };
+  let called;
+  const s = setup({ settings, nativeExecute: async (...args) => { called = args; return nativeResult; } });
+  for (const config of [settings.capabilityDiscovery, { recommendation: { capabilityPrediction: true } }]) {
+    settings.capabilityDiscovery = config;
+    const options = { skills: [skill], sections: { keep: 'original' } };
+    const ctx = context();
+    await s.handlers.before_agent_start({ prompt: 'task', systemPromptOptions: options }, ctx);
+    await s.handlers.context({ messages: [] }, ctx);
+    await s.handlers.turn_end({}, ctx);
+    assert.deepEqual(options, { skills: [skill], sections: { keep: 'original' } });
+    const args = { query: 'native search', limit: 2 }, signal = new AbortController().signal;
+    const update = () => {};
+    assert.equal(await s.tool.execute('id', args, signal, update, ctx), nativeResult);
+    assert.deepEqual(called, ['id', args, signal, update, ctx]);
+    assert.equal(s.sent.length, 0);
+  }
+  // The same registered entry can enable smart discovery once settings are valid.
+  settings.capabilityDiscovery = { toolSearch: { enabled: true } };
+  const options = { skills: [skill], sections: {} };
+  await s.handlers.before_agent_start({ prompt: 'task', systemPromptOptions: options }, context());
+  assert.equal(options.skills.length, 0);
+  assert.match(options.sections.available_capabilities, /统一发现入口/);
 });

@@ -77,7 +77,7 @@ test('live input preparation: capabilities/actions object with no warnings', { s
       createReadToolDefinition: () => { throw new Error('No action execution allowed in this probe'); },
     }, ctx, catalog: [{ type: 'skill', name: 'engineering', description: 'Implement and verify code changes.', path: file }],
       query: 'Implement add(a,b) in the source project. Use the engineering method. The preparation action budget is zero; suggest capabilities only and return actions: [].',
-      options: { ...modelOptions, capabilityPrediction: true, actionPrediction: true, maxSuggestedActions: 0 },
+      options: { ...modelOptions, enabled: true, actionPrediction: true, maxSuggestedActions: 0 },
       signal: AbortSignal.timeout(60000) });
     console.log(JSON.stringify({ scenario: 'input-preparation', model: modelOptions, ...result }));
     assert.equal(result.prefetch.failure, undefined);

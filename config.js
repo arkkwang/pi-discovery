@@ -61,19 +61,17 @@ function cwdDisableList(value, key) {
 export function recommendationOptions(value = {}) {
   const key = 'capabilityDiscovery.recommendation';
   const result = checkedOptions(value, {
-    model: 'llama/iq3', capabilityPrediction: false, actionPrediction: false,
-    maxSuggestedActions: 3, thinkingLevel: 'medium', toolSearchThinkingLevel: 'medium', timeoutMs: 60_000,
+    enabled: false, model: 'llama/iq3', actionPrediction: false,
+    maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000,
     disableForCwd: [],
   }, key);
   parseModel(result.model, `${key}.model`);
-  for (const field of ['capabilityPrediction', 'actionPrediction']) {
-    if (typeof result[field] !== 'boolean') throw new Error(`${key}.${field} must be boolean`);
-  }
+  if (typeof result.enabled !== 'boolean') throw new Error(`${key}.enabled must be boolean`);
+  if (typeof result.actionPrediction !== 'boolean') throw new Error(`${key}.actionPrediction must be boolean`);
   if (!Number.isInteger(result.maxSuggestedActions) || result.maxSuggestedActions < 0 || result.maxSuggestedActions > 8) {
     throw new Error(`${key}.maxSuggestedActions must be an integer 0–8`);
   }
   result.thinkingLevel = thinkingLevel(result.thinkingLevel, `${key}.thinkingLevel`);
-  result.toolSearchThinkingLevel = thinkingLevel(result.toolSearchThinkingLevel, `${key}.toolSearchThinkingLevel`);
   result.timeoutMs = boundaryBudget(result.timeoutMs, `${key}.timeoutMs`);
   result.disableForCwd = cwdDisableList(result.disableForCwd, `${key}.disableForCwd`);
   return result;
@@ -93,7 +91,19 @@ export function trajectoryOptions(value = {}) {
   return result;
 }
 
+// Smart tool_search: replace the built-in entry, rewrite the prompt directory and
+// route natural-language search through a model. Settings are read at runtime;
+// disabled searches delegate directly to the host native implementation.
+export function toolSearchOptions(value = {}) {
+  const key = 'capabilityDiscovery.toolSearch';
+  const result = checkedOptions(value, { enabled: true, model: 'llama/iq3', thinkingLevel: 'medium' }, key);
+  parseModel(result.model, `${key}.model`);
+  if (typeof result.enabled !== 'boolean') throw new Error(`${key}.enabled must be boolean`);
+  result.thinkingLevel = thinkingLevel(result.thinkingLevel, `${key}.thinkingLevel`);
+  return result;
+}
+
 export function discoveryOptions(value = {}) {
-  const groups = checkedOptions(value, { recommendation: {}, trajectory: {} }, 'capabilityDiscovery');
-  return { recommendation: recommendationOptions(groups.recommendation), trajectory: trajectoryOptions(groups.trajectory) };
+  const groups = checkedOptions(value, { toolSearch: {}, recommendation: {}, trajectory: {} }, 'capabilityDiscovery');
+  return { toolSearch: toolSearchOptions(groups.toolSearch), recommendation: recommendationOptions(groups.recommendation), trajectory: trajectoryOptions(groups.trajectory) };
 }

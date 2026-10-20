@@ -31,13 +31,17 @@ Trajectory-related features additionally require pi-snap **≥0.5.0** on `PATH` 
 ```json
 {
   "capabilityDiscovery": {
-    "recommendation": {
+    "toolSearch": {
+      "enabled": true,
       "model": "zai-coding-cn/glm-5.3-flash",
-      "capabilityPrediction": true,
+      "thinkingLevel": "medium"
+    },
+    "recommendation": {
+      "enabled": true,
+      "model": "zai-coding-cn/glm-5.3-flash",
       "actionPrediction": true,
       "maxSuggestedActions": 3,
       "thinkingLevel": "low",
-      "toolSearchThinkingLevel": "medium",
       "timeoutMs": 60000,
       "disableForCwd": []
     },
@@ -53,20 +57,22 @@ Trajectory-related features additionally require pi-snap **≥0.5.0** on `PATH` 
 }
 ```
 
-Write it to Pi's `settings.json`. `capabilityDiscovery` accepts **only two top-level keys**: `recommendation` and `trajectory`. Their models, thinking levels, and switches are independent; neither inherits settings from the other. Omitted groups use their own defaults.
+Write it to Pi's `settings.json`. `capabilityDiscovery` accepts **only three top-level keys**: `toolSearch`, `recommendation`, and `trajectory` — one per independent feature: smarter tool search (the discovery takeover), startup-time recommendation (capability/action prediction), and in-execution checks (periodic trajectory review). Each group's model, thinking level, and switches are independent; neither inherits settings from the others. Omitted groups use their own defaults.
 
 ### Available configuration keys
 
 All keys are optional. This table lists every supported key and its default.
 
-| Stage | Key | Default | Purpose / range |
+| Group | Key | Default | Purpose / range |
 | --- | --- | --- | --- |
-| recommendation | `model` | `"llama/iq3"` | `provider/model` for capability/action prediction and semantic `tool_search` |
-| recommendation | `capabilityPrediction` | `false` | Automatically recommend capabilities; boolean |
-| recommendation | `actionPrediction` | `false` | Predict and execute preparation actions; boolean |
+| toolSearch | `enabled` | `true` | Enable smart discovery and turn the prompt's Skill/MCP directory into a capability catalog; when `false`, the host's native `tool_search` and native directory stay in place and the rest of this group is inert |
+| toolSearch | `model` | `"llama/iq3"` | `provider/model` routing natural-language search |
+| toolSearch | `thinkingLevel` | `"medium"` | Thinking level for semantic routing |
+| recommendation | `enabled` | `false` | Enable input-time recommendation; capability suggestions are always included when enabled |
+| recommendation | `model` | `"llama/iq3"` | `provider/model` for capability/action prediction |
+| recommendation | `actionPrediction` | `false` | Additionally predict and execute preparation actions when recommendation is enabled; boolean |
 | recommendation | `maxSuggestedActions` | `3` | Actions per preparation; integer 0–8, 0 executes none |
 | recommendation | `thinkingLevel` | `"medium"` | Thinking level for automatic capability/action prediction |
-| recommendation | `toolSearchThinkingLevel` | `"medium"` | Thinking level for explicit semantic search |
 | recommendation | `timeoutMs` | `60000` | Preparation boundary budget in ms; integer 1000–600000 |
 | recommendation | `disableForCwd` | `[]` | Skip preparation for sessions whose CWD is listed; array of path strings |
 | trajectory | `model` | `"llama/iq3"` | `provider/model` for periodic trajectory warnings |
@@ -78,13 +84,15 @@ All keys are optional. This table lists every supported key and its default.
 
 - `model` must be a nonempty `provider/model` string without whitespace. Only the first `/` separates the provider, so model IDs such as `vendor/model` are supported. The model must be configured in Pi; currently only `openai-completions` APIs are supported.
 - All three thinking-level fields accept `off/minimal/low/medium/high/xhigh/max`. Mapping depends on the selected model, independently of the main session's thinking level.
-- `disableForCwd` lists project roots where the stage performs no model work: preparation logs `disabled-by-cwd` at the input gate, review logs `disabled-by-cwd` at the step gate. Entries accept absolute paths, `~/`-prefixed paths, or relative paths (resolved against the Pi process CWD). `/` and `\` are interchangeable, and `.`/`..`, duplicate or trailing separators are normalized; on Windows, letter case is ignored. Matching is exact directory identity — a listed root does not cover its subdirectories, and the two stages gate independently. Manual `tool_search` is not affected.
-- The example keeps both stages on the same model to preserve the previous configuration's intent; change either independently. `tool_search` belongs to recommendation, not a third model stage; disabling automatic prediction does not disable manual search.
-- **The old flat format is rejected, not automatically migrated.** Combine `provider` + `model` into each group's `model`; move capability/action switches and the action cap into recommendation; split `autoRecommendThinkingLevel` into each group's `thinkingLevel`; move `toolSearchThinkingLevel` into recommendation. Rename `trajectoryWarnings` to `trajectory.enabled` and `trajectoryWarningEverySteps` to `trajectory.everySteps`. Legacy keys, wrong nesting, unknown keys, and invalid values fail explicitly rather than being silently ignored.
+- `disableForCwd` lists project roots where the group performs no model work: preparation logs `disabled-by-cwd` at the input gate, review logs `disabled-by-cwd` at the step gate. Entries accept absolute paths, `~/`-prefixed paths, or relative paths (resolved against the Pi process CWD). `/` and `\` are interchangeable, and `.`/`..`, duplicate or trailing separators are normalized; on Windows, letter case is ignored. Matching is exact directory identity — a listed root does not cover its subdirectories, and the groups gate independently. Manual `tool_search` is not affected.
+- When `toolSearch.enabled=false`, the registered entry delegates directly to the host's native `tool_search` (BM25 search, no routing model) and keeps its metadata, schema and results. The Skill/MCP prompt directory stays native. Settings are read at runtime: the prompt follows the next user input; search follows the next call. Invalid configuration keeps the native prompt/search and reports a warning at the input gate.
+- `recommendation.enabled=false` only disables input-time capability/action prediction; `tool_search` routing and periodic review are unaffected. `trajectory.enabled=false` likewise only disables the review.
+- The example keeps all three groups on the same model to preserve the previous configuration's intent; change each independently.
+- **Older formats are rejected, not automatically migrated.** Remove `recommendation.capabilityPrediction` and set `recommendation.enabled` to enable capability recommendation; `actionPrediction` only adds actions and cannot enable recommendation on its own. `recommendation.toolSearchThinkingLevel` moves to `toolSearch.thinkingLevel`, and the routing model now comes from `toolSearch.model`. For the older flat format: combine `provider` + `model` into each group's `model`; move the action switch and action cap into recommendation; split `autoRecommendThinkingLevel` into each group's `thinkingLevel`; rename `trajectoryWarnings` to `trajectory.enabled` and `trajectoryWarningEverySteps` to `trajectory.everySteps`. Legacy keys, wrong nesting, unknown keys, and invalid values fail explicitly rather than being silently ignored.
 
 | Entry point | Invocation and input | Output |
 | --- | --- | --- |
-| After user input is received, before the first main model request | Calls only `runPrefetch`; capability catalog, current request/recent background; when actions are enabled, additionally the project index, retained reads, and the action budget | `suggestions` and `actions` in the object, containing only enabled fields; **never warnings** |
+| After user input is received, before the first main model request | Calls only `runPrefetch`; capability catalog, current request/recent background; when actions are enabled, additionally the project index, retained reads, and the action budget | `suggestions` always; `actions` only when enabled; **never warnings** |
 | Every N steps | Calls only `runTrajectoryReview`; execution trajectory, a Skill-only table of names/descriptions/paths, the main agent's current system prompt, and the user request | A list of minimal two-string pairs; `[]` when there are no issues |
 | Manual `tool_search` | Natural-language queries use independent semantic search; exact names/lists need no model | Capability suggestions and actual load results |
 
@@ -120,7 +128,7 @@ Each item is exactly two non-empty strings: `[where it deviated and what to do, 
 The isolated SDK session does not load user extensions, MCP, project instructions, or tools. The model only selects suggestions; the host then executes the allowed `read`/Bash; results are not sent back to the prediction model. The preparation feature does not perform trajectory review.
 
 - The capability catalog contains Skills, MCP (including host-declared pending services), and deferred/codemode tools; hidden tools are not included; it does not wait for MCP readiness and does not auto-activate. The main model loads them on demand via `tool_search`.
-- When capability prediction is enabled, request/setup failures, internal timeouts, invalid responses, or entirely invalid capability items deliver an unranked full catalog with `fallback: "full-catalog"` and `routingError` to the main model context and persisted preparation message. There is no retry/model switch and fallback adds no reads or actions; existing valid actions and their results are retained. Valid empty suggestions are not a failure; partially valid suggestions are kept with drop diagnostics, and action-only failures do not trigger capability fallback. Disabled capability prediction, caller cancellation, and session changes do not inject a fallback catalog.
+- When recommendation is enabled, request/setup failures, internal timeouts, invalid responses, or entirely invalid capability items deliver an unranked full catalog with `fallback: "full-catalog"` and `routingError` to the main model context and persisted preparation message. There is no retry/model switch and fallback adds no reads or actions; existing valid actions and their results are retained. Valid empty suggestions are not a failure; partially valid suggestions are kept with drop diagnostics, and action-only failures do not trigger capability fallback. Disabled recommendation, caller cancellation, and session changes do not inject a fallback catalog.
 - A Skill's name, full description, and SKILL.md path are placed in the same entry; at most the entry file is read automatically, and internal reference materials are selected by the main agent.
 - Project indexing is breadth-first, capped at 3 levels / 200 entries / 6000 characters / 2000 visited entries / 100 ms; it respects the local `.gitignore`, skips hidden directories, dependency/build directories, and credential names, and does not follow directory symlinks. Omission does not prove absence.
 - Project files use `project:<relative-path>`; Skills use real paths inside their directories. Before reading, candidate paths, real directory scope, text type, and size are re-checked: 50,000 bytes per file, 100,000 bytes in total.

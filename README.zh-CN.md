@@ -31,13 +31,17 @@ pi install .
 ```json
 {
   "capabilityDiscovery": {
-    "recommendation": {
+    "toolSearch": {
+      "enabled": true,
       "model": "zai-coding-cn/glm-5.3-flash",
-      "capabilityPrediction": true,
+      "thinkingLevel": "medium"
+    },
+    "recommendation": {
+      "enabled": true,
+      "model": "zai-coding-cn/glm-5.3-flash",
       "actionPrediction": true,
       "maxSuggestedActions": 3,
       "thinkingLevel": "low",
-      "toolSearchThinkingLevel": "medium",
       "timeoutMs": 60000,
       "disableForCwd": []
     },
@@ -53,20 +57,22 @@ pi install .
 }
 ```
 
-写入 Pi 的 `settings.json`。`capabilityDiscovery` **只接受两个顶层键**：`recommendation` 与 `trajectory`。两阶段的模型、思考级别与开关相互独立，不继承另一阶段的设置；省略任一阶段时使用该阶段的默认值。
+写入 Pi 的 `settings.json`。`capabilityDiscovery` **只接受三个顶层键**：`toolSearch`、`recommendation` 与 `trajectory`，分别对应三个独立功能：更智能的 tool search（接管发现入口）、启动时推荐（能力/动作预测）、执行时检查（周期轨迹审查）。三组各自的模型、思考级别与开关相互独立，不继承另一组的设置；省略任一组时使用该组的默认值。
 
 ### 可用配置键
 
 所有键均可省略；下表列出全部可用键与默认值。
 
-| 阶段 | 键 | 默认值 | 用途 / 范围 |
+| 组 | 键 | 默认值 | 用途 / 范围 |
 | --- | --- | --- | --- |
-| recommendation | `model` | `"llama/iq3"` | 能力/动作预测与 `tool_search` 语义搜索共用的 `provider/model` |
-| recommendation | `capabilityPrediction` | `false` | 是否自动推荐能力，布尔值 |
-| recommendation | `actionPrediction` | `false` | 是否自动预测并执行准备动作，布尔值 |
+| toolSearch | `enabled` | `true` | 是否启用智能发现：把系统提示词的 Skill/MCP 目录改为能力短目录；`false` 时宿主原生 `tool_search` 与原生目录保持不变，本组其余键失效 |
+| toolSearch | `model` | `"llama/iq3"` | 自然语言搜索路由使用的 `provider/model` |
+| toolSearch | `thinkingLevel` | `"medium"` | 语义路由的思考级别 |
+| recommendation | `enabled` | `false` | 输入时推荐开关；开启后默认推荐能力 |
+| recommendation | `model` | `"llama/iq3"` | 能力/动作预测使用的 `provider/model` |
+| recommendation | `actionPrediction` | `false` | 推荐开启时，是否附加预测并执行准备动作，布尔值 |
 | recommendation | `maxSuggestedActions` | `3` | 每次准备动作上限，整数 0–8；0 不执行动作 |
 | recommendation | `thinkingLevel` | `"medium"` | 自动能力/动作预测的思考级别 |
-| recommendation | `toolSearchThinkingLevel` | `"medium"` | 显式语义搜索的思考级别 |
 | recommendation | `timeoutMs` | `60000` | 准备阶段的预算（毫秒），整数 1000–600000 |
 | recommendation | `disableForCwd` | `[]` | 会话 CWD 命中列表时跳过准备；路径字符串数组 |
 | trajectory | `model` | `"llama/iq3"` | 周期轨迹预警使用的 `provider/model` |
@@ -78,13 +84,15 @@ pi install .
 
 - `model` 必须是非空 `provider/model` 字符串，不含空白；按第一个 `/` 分割，支持 `provider/vendor/model` 这类带 `/` 的模型 ID。模型须已在 Pi 中配置，当前仅支持 `openai-completions` API。
 - 三个思考级别字段均支持 `off/minimal/low/medium/high/xhigh/max`，实际映射取决于所选模型，不受主会话思考级别影响。
-- `disableForCwd` 列出不做本阶段模型工作的项目根路径：准备阶段在输入门禁记录 `disabled-by-cwd`，审查阶段在步数门禁记录 `disabled-by-cwd`。条目支持绝对路径、`~/` 开头路径或相对路径（相对 Pi 进程 CWD 解析）；`/` 与 `\` 通用，`.`/`..`、重复或末尾分隔符会归一化，Windows 下忽略大小写。匹配按目录本体精确相等——列出根目录不覆盖其子目录，两阶段各自独立判断。手动 `tool_search` 不受影响。
-- 示例让两阶段使用同一模型以保留原配置意图；可以分别改成不同模型。`tool_search` 属于 recommendation 阶段，不是第三个模型配置阶段；即使关闭自动预测，手动搜索仍可使用该模型。
-- **旧平铺格式不再接受，也不自动迁移。** 将 `provider` + `model` 合并为每组的 `model`；能力/动作开关与动作上限移入 recommendation，`autoRecommendThinkingLevel` 拆为两组各自的 `thinkingLevel`，`toolSearchThinkingLevel` 移入 recommendation；`trajectoryWarnings` 改为 `trajectory.enabled`，`trajectoryWarningEverySteps` 改为 `trajectory.everySteps`。旧键、错误层级、未知键或无效值会明确报错，不会静默忽略。
+- `disableForCwd` 列出不做本组模型工作的项目根路径：准备阶段在输入门禁记录 `disabled-by-cwd`，审查阶段在步数门禁记录 `disabled-by-cwd`。条目支持绝对路径、`~/` 开头路径或相对路径（相对 Pi 进程 CWD 解析）；`/` 与 `\` 通用，`.`/`..`、重复或末尾分隔符会归一化，Windows 下忽略大小写。匹配按目录本体精确相等——列出根目录不覆盖其子目录，各自主组独立判断。手动 `tool_search` 不受影响。
+- `toolSearch.enabled=false` 时，注册的入口直接委托宿主原生 `tool_search`（BM25 搜索，不调用路由模型），保留原生工具元数据、参数 schema 与结果；系统提示词保留原生 Skill/MCP 目录。配置在运行时读取：提示词随下一次用户输入更新，搜索随下一次调用更新。配置非法时保留原生提示词/搜索，并在输入门禁告警。
+- `recommendation.enabled=false` 只关闭输入时的能力/动作预测，不影响 `tool_search` 路由与周期审查；`trajectory.enabled=false` 同理只关审查。
+- 示例让三组使用同一模型以保留原配置意图；可以分别改成不同模型。
+- **旧格式不再接受，也不自动迁移。** 删除 `recommendation.capabilityPrediction`，用 `recommendation.enabled` 开启能力推荐；`actionPrediction` 只控制附加动作，不能单独开启推荐。 `recommendation.toolSearchThinkingLevel` 移入 `toolSearch.thinkingLevel`，路由模型改由 `toolSearch.model` 提供；更早的平铺格式：将 `provider` + `model` 合并为各组的 `model`，动作开关与动作上限移入 recommendation，`autoRecommendThinkingLevel` 拆为各组各自的 `thinkingLevel`，`trajectoryWarnings` 改为 `trajectory.enabled`，`trajectoryWarningEverySteps` 改为 `trajectory.everySteps`。旧键、错误层级、未知键或无效值会明确报错，不会静默忽略。
 
 | 入口 | 调用与输入 | 输出 |
 | --- | --- | --- |
-| 接收用户输入后、首个主模型请求前 | 只调用 `runPrefetch`；能力目录、当前请求/近期背景；动作启用时另加项目索引、已保留读取和动作预算 | 对象中的 `suggestions`、`actions`，只含启用字段；**绝无 warnings** |
+| 接收用户输入后、首个主模型请求前 | 只调用 `runPrefetch`；能力目录、当前请求/近期背景；动作启用时另加项目索引、已保留读取和动作预算 | 始终包含 `suggestions`，仅动作开启时包含 `actions`；**绝无 warnings** |
 | 每 N 步 | 只调用 `runTrajectoryReview`；执行轨迹、仅 Skill 的名称/description/路径表、主 Agent 当前系统提示词、用户请求 | 极简二元组列表；无问题为 `[]` |
 | 手动 `tool_search` | 自然语言查询使用独立语义搜索；精确名称/列表无需模型 | 能力建议及实际加载结果 |
 

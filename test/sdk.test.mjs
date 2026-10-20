@@ -158,8 +158,8 @@ test('resource loader replaces both built-ins once; settings and request additio
   const { convertResponsesMessages } = await ai('api/openai-responses-shared.js');
   const cwd = await mkdtemp(path.join(tmpdir(), 'unified-loader-'));
   try {
-    const settingsManager = SettingsManager.inMemory({ capabilityDiscovery: { recommendation: { capabilityPrediction: true } }, packages: [] });
-    assert.equal(settingsManager.getSettings().capabilityDiscovery.recommendation.capabilityPrediction, true);
+    const settingsManager = SettingsManager.inMemory({ capabilityDiscovery: { recommendation: { enabled: true } }, packages: [] });
+    assert.equal(settingsManager.getSettings().capabilityDiscovery.recommendation.enabled, true);
     const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager,
       noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       additionalExtensionPaths: [fileURLToPath(new URL('../index.js', import.meta.url))],
@@ -194,10 +194,11 @@ test('real native factory loads non-MCP tools once, without executing them', { s
   const { createToolSearchExtension } = await import(pathToFileURL(path.join(sdkRoot, 'dist/extensions/tool-search/index.js')).href);
   const { registerDiscovery } = await import('../discovery.js');
   let search, active = ['tool_search'], changes = 0;
+  const settings = { capabilityDiscovery: { toolSearch: { enabled: true } } };
   const tools = ['subagent_start', 'notify'].map(name => ({ name, description: name,
     exposure: 'deferred', parameters: { type: 'object', properties: {} }, execute() { assert.fail('discovery must not execute'); } }));
   registerDiscovery({
-    registerTool: value => { search = value; }, on() {},
+    registerTool: value => { search = value; }, on() {}, getSettings: () => settings,
     getAllTools: () => tools, getActiveTools: () => active,
     setActiveTools: names => { active = names; changes++; },
   }, { createToolSearchExtension, createMcpExtension: () => () => {} });
@@ -213,4 +214,13 @@ test('real native factory loads non-MCP tools once, without executing them', { s
     assert.deepEqual(again.availableTools, [name]);
   }
   assert.equal(changes, 2);
+  settings.capabilityDiscovery.toolSearch.enabled = false;
+  let native;
+  createToolSearchExtension()({ registerTool: value => { native = value; },
+    getAllTools: () => tools, getActiveTools: () => active, setActiveTools: names => { active = names; } });
+  assert.equal(search.parameters, native.parameters);
+  assert.equal(search.description, native.description);
+  const args = { query: 'notify' };
+  assert.deepEqual(await search.execute('native', args), await native.execute('native', args),
+    'disabled smart search returns the real native result unchanged');
 });

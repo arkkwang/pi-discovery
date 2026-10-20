@@ -8,7 +8,7 @@ const warning = ['先确认目标再继续实现。', '用户：先确认目标�
 function fixture(config = {}, warnings = [warning]) {
   const requests = [], reviews = [], notices = [];
   const settings = { capabilityDiscovery: {
-    recommendation: { capabilityPrediction: true, actionPrediction: true, ...config.recommendation },
+    recommendation: { enabled: true, actionPrediction: true, ...config.recommendation },
     trajectory: { enabled: true, everySteps: 2, ...config.trajectory } } };
   const s = setup({ settings, sdk: {}, register: (pi, deps) => registerDiscovery(pi, { ...deps,
     predict: async args => { requests.push(args); return { suggestions: [{ type: 'skill', name: 'method' }],
@@ -36,7 +36,8 @@ test('user input only prepares capabilities/actions, never reviews or supplies w
   const result = await f.input();
   assert.equal(f.requests.length, 1);
   assert.equal(f.reviews.length, 0);
-  assert.equal(f.requests[0].options.enabled, undefined);
+  assert.equal(f.requests[0].options.enabled, true);
+  assert.equal(f.requests[0].options.everySteps, undefined, 'review switches never leak into preparation');
   assert.equal(result.message.details.warnings, undefined);
   assert.doesNotMatch(result.message.content, /warnings/);
 });
@@ -49,7 +50,6 @@ test('fixed N steps unconditionally invokes the independent reviewer with four i
   assert.equal(f.requests.length, 1);
   assert.equal(f.reviews.length, 1);
   const args = f.reviews[0];
-  assert.equal(args.options.capabilityPrediction, undefined);
   assert.equal(args.options.actionPrediction, undefined);
   assert.equal(args.systemPrompt, 'MAIN SYSTEM');
   assert.equal(args.userPrompt, 'Implement feature');
@@ -61,7 +61,7 @@ test('fixed N steps unconditionally invokes the independent reviewer with four i
 });
 
 test('review-only configuration does not issue a user-input request; each new input resets N', async () => {
-  const f = fixture({ recommendation: { capabilityPrediction: false, actionPrediction: false } });
+  const f = fixture({ recommendation: { enabled: false } });
   assert.equal(await f.input(), undefined);
   await f.step(); await f.input(); await f.step();
   assert.equal(f.reviews.length, 0);
@@ -101,7 +101,7 @@ test('review output is exactly a list of nonempty two-string tuples', () => {
 });
 
 test('trajectory file failure is explicit and fail-open: no review on fake empty history', async () => {
-  const f = fixture({ recommendation: { capabilityPrediction: false, actionPrediction: false }, trajectory: { everySteps: 1 } });
+  const f = fixture({ recommendation: { enabled: false }, trajectory: { everySteps: 1 } });
   f.ctx.sessionManager.getBranch = () => [{ type: 'message', message: { role: 'user', content: 'history' } }];
   await f.input();
   assert.equal(await f.step(), undefined);
@@ -128,7 +128,7 @@ test('repeated concurrent contexts share prediction and persist exactly once; sw
   let sessionId = 'first';
   const gate = new Promise(r => { release = r; });
   const started = new Promise(r => { entered = r; });
-  const s = setup({ sdk: {}, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } },
+  const s = setup({ sdk: {}, settings: { capabilityDiscovery: { recommendation: { enabled: true } } },
     register: (pi,deps) => registerDiscovery(pi,{...deps,predict: async () => {
       requests++; entered(); await gate;
       return { suggestions: [{ type:'skill',name:'ready' }],prefetch:{rounds:[],requests:1},diagnostics:{} };
@@ -150,7 +150,7 @@ test('repeated concurrent contexts share prediction and persist exactly once; sw
   // A second preparation must not survive a session switch, even if its provider ignores abort.
   let finishOld,oldEntered;
   const oldGate = new Promise(r=>{finishOld=r});const oldStarted=new Promise(r=>{oldEntered=r});
-  const other=setup({sdk:{},settings:{capabilityDiscovery:{ recommendation: { capabilityPrediction: true } }},
+  const other=setup({sdk:{},settings:{capabilityDiscovery:{ recommendation: { enabled: true } }},
     register:(pi,deps)=>registerDiscovery(pi,{...deps,predict:async()=>{oldEntered();await oldGate;return {suggestions:[{name:'stale'}],prefetch:{rounds:[]},diagnostics:{}}}})});
   const switchCtx = { ...ctx, sessionManager: { ...ctx.sessionManager, getBranch: () => [] } };
   await other.handlers.before_agent_start({prompt:'old',systemPromptOptions:{skills:[],sections:{}}},switchCtx);
@@ -168,7 +168,7 @@ test('parent diagnostics distinguish configured switches, effective preparation 
   assert.equal(input.resetFromSteps, 0);
   const start = events.find(e => e.event === 'start');
   assert.equal(start.configuredOptions.trajectory.enabled, true);
-  assert.equal(start.effectiveOptions.enabled, undefined);
+  assert.equal(start.effectiveOptions.everySteps, undefined, 'review switches never leak into preparation');
   assert.equal(start.inputId, input.inputId);
   const context = events.find(e => e.event === 'context-ready');
   assert.equal(context.inputId, input.inputId);
@@ -193,7 +193,7 @@ test('parent diagnostics explain each review gate and resets; empty review is no
 test('disabled preparation and review, zero interval and cancelled rounds leave explicit decisions', async () => {
   for (const [config, reason] of [[{ trajectory: { enabled: false } }, 'disabled'],
     [{ trajectory: { everySteps: 0 } }, 'zero-interval']]) {
-    const f = fixture({ recommendation: { capabilityPrediction: false, actionPrediction: false }, ...config });
+    const f = fixture({ recommendation: { enabled: false }, ...config });
     await f.input(); await f.step();
     assert.equal(f.s.diagnostics.find(e => e.data.event === 'input').data.preparation, 'disabled');
     assert.equal(f.s.diagnostics.at(-1).data.reason, reason);
@@ -218,4 +218,35 @@ test('incident regression: 11 rounds, user correction, 3 rounds explains why int
   assert.ok(gates.every(e => e.reason === 'below-interval' && e.enabled && e.interval === 15));
   assert.equal(gates[10].steps, 11);
   assert.equal(gates[11].steps, 1);
+});
+
+test('invalid input refreshes state before settings recover without another input', async () => {
+  const f = fixture({ recommendation: { enabled: false } });
+  await f.input();
+  await f.step();
+  const oldInput = f.s.diagnostics.find(e => e.data.event === 'input').data.inputId;
+  f.settings.capabilityDiscovery.toolSearch = { enabled: 'invalid' };
+  const options = { skills: [{ name: 'new-method', description: 'NEW', filePath: '/new/SKILL.md' }],
+    sections: { mcp_servers: '- mcp__new: New service' } };
+  const original = structuredClone(options);
+  await f.s.handlers.before_agent_start({ prompt: 'New request', systemPromptOptions: options }, f.ctx);
+  assert.deepEqual(options, original, 'invalid settings must not rewrite the native prompt');
+  await f.s.handlers.context({ messages: [] }, f.ctx);
+  await f.step();
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.reviews.length, 0);
+  const input = f.s.diagnostics.findLast(e => e.data.event === 'input').data;
+  assert.equal(input.preparation, 'invalid-settings');
+  assert.notEqual(input.inputId, oldInput, 'invalid input still gets its own identity');
+  assert.equal(input.resetFromSteps, 1);
+
+  f.settings.capabilityDiscovery.toolSearch.enabled = true;
+  await f.step();
+  assert.equal(f.reviews.length, 0, 'the new input resets the review interval');
+  await f.step();
+  assert.equal(f.reviews.length, 1);
+  assert.equal(f.reviews[0].userPrompt, 'New request');
+  assert.deepEqual(f.reviews[0].skills.map(s => s.name), ['new-method']);
+  const result = await f.s.search({ query: '*' });
+  assert.deepEqual(result.details.suggestions.map(s => s.name).sort(), ['mcp__new', 'new-method']);
 });

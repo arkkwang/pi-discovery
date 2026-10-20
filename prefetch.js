@@ -110,7 +110,7 @@ const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tot
 export async function runPrefetch({ sdk, query, catalog, ctx, options, signal, readPaths = new Set(), retainedReads = new Map(), trace = () => {} }) {
   const start = performance.now();
   options = recommendationOptions(options);
-  if (!options.capabilityPrediction && !options.actionPrediction) return {
+  if (!options.enabled) return {
     suggestions: [], prefetch: { version: 2, requests: 0, reads: 0, rounds: [] },
     diagnostics: { endReason: 'disabled', totalMs: 0, inferenceMs: 0, requests: 0, actions: [], skipped: [] },
   };
@@ -145,7 +145,7 @@ ${query}`;
       onRequest: () => { requests++; }, onInference: ms => { inferenceMs = ms; } });
     prediction = validatePrediction(value, catalog, files, options);
     predictionCompleted = true;
-    if (options.capabilityPrediction && !prediction.suggestions.length
+    if (!prediction.suggestions.length
       && prediction.dropped.some(d => d.kind === 'response' || d.kind === 'suggestion')) {
       routingError = 'Capability prediction returned invalid suggestions (no valid capabilities).';
     }
@@ -205,7 +205,7 @@ ${query}`;
     }
   } catch (error) {
     failure = signal?.aborted ? 'cancelled-or-timeout' : requests ? 'prediction-error' : 'setup-error';
-    if (options.capabilityPrediction && !predictionCompleted) {
+    if (!predictionCompleted) {
       routingError = `Capability prediction failed: ${String(error?.message ?? error)}`;
     }
     trace('failure', { cause: failure, ...(signal?.aborted ? {} : { error: String(error?.message ?? error) }) });

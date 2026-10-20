@@ -15,34 +15,34 @@ test('project instructions survive a long system preamble without rereading AGEN
   assert.match(rules, /\/repo\/AGENTS.md/);
   assert.ok(rules.length <= 24000);
 });
-for (let mask = 0; mask < 4; mask++) test(`dynamic prompts and strict output fields: switches ${mask}`, () => {
-  const options = recommendationOptions({ capabilityPrediction: !!(mask & 1), actionPrediction: !!(mask & 2) });
-  const files = options.actionPrediction ? [{ path: '/skills/method/SKILL.md' }] : [];
+for (const actionPrediction of [false, true]) test(`dynamic prompts and strict output fields: actions ${actionPrediction}`, () => {
+  const options = recommendationOptions({ actionPrediction });
+  const files = actionPrediction ? [{ path: '/skills/method/SKILL.md' }] : [];
   const schema = predictionSchema(catalog, files, options);
   const { systemPrompt, input } = buildPredictionPrompts({ options, catalog, schema, cwd: '/project',
     tree: { entries: ['src/main.js'], maxDepth: 3, truncated: true, reason: 'entries' },
     query: 'CURRENT-TASK', rules: 'SYSTEM-RULES\nPROJECT-RULES\nSKILL-RULES', retained: { paths: ['/already/read.md'], truncated: false } });
-  for (const data of ['METHOD-DATA', 'SERVICE-DATA', 'src/main.js', 'CURRENT-TASK', 'SYSTEM-RULES', '/already/read.md', JSON.stringify(schema)]) assert.ok(!systemPrompt.includes(data));
+  for (const data of ['METHOD-DATA', 'SERVICE-DATA', 'CURRENT-TASK', 'SYSTEM-RULES', JSON.stringify(schema)]) assert.ok(!systemPrompt.includes(data));
+  if (!actionPrediction) for (const data of ['src/main.js', '/already/read.md']) assert.ok(!systemPrompt.includes(data));
   assert.ok(input.startsWith('## '));
   assert.ok(input.includes('CURRENT-TASK'));
   assert.ok(input.includes(JSON.stringify(schema)));
-  assert.equal(input.includes('METHOD-DATA'), !!(mask & 3));
-  assert.equal(input.includes('SERVICE-DATA'), !!(mask & 1));
-  assert.equal(input.includes('TOOL-DATA'), !!(mask & 1));
-  assert.equal(input.includes('src/main.js'), !!(mask & 2));
-  assert.equal(input.includes('/already/read.md'), !!(mask & 2));
+  assert.equal(input.includes('METHOD-DATA'), true);
+  assert.equal(input.includes('SERVICE-DATA'), true);
+  assert.equal(input.includes('TOOL-DATA'), true);
+  assert.equal(input.includes('src/main.js'), actionPrediction);
+  assert.equal(input.includes('/already/read.md'), actionPrediction);
   assert.equal(input.includes('PROJECT-RULES'), false);
-  const enabled = ['suggestions', 'actions'].filter((_, bit) => mask & (1 << bit));
+  const enabled = ['suggestions', ...(actionPrediction ? ['actions'] : [])];
   assert.deepEqual(schema.required, enabled);
   assert.deepEqual(Object.keys(schema.properties), enabled);
   for (const field of ['suggestions', 'actions', 'warnings']) assert.equal(systemPrompt.includes({ suggestions: '## Capability suggestions', actions: '## Preparation actions', warnings: '## Trajectory warnings' }[field]), enabled.includes(field));
-  if (options.actionPrediction) {
+  if (actionPrediction) {
     assert.match(systemPrompt, /verbatim/);
     assert.match(systemPrompt, /never absolute paths|Never convert/);
   }
   assert.doesNotMatch(systemPrompt, /\{"suggestions":\[/);
-  if (options.capabilityPrediction) assert.match(input, /\{"suggestions":\[/);
-  else assert.doesNotMatch(input, /\{"suggestions":\[/);
+  assert.match(input, /\{"suggestions":\[/);
   const response = Object.fromEntries(enabled.map(key => [key, []]));
   assert.deepEqual(validatePrediction(response, catalog, files, options), { suggestions: [], actions: [], dropped: [] });
   for (const key of enabled) {
@@ -60,7 +60,7 @@ for (let mask = 0; mask < 4; mask++) test(`dynamic prompts and strict output fie
 });
 
 test('schemas have no dynamic IDs/paths or budgets; host checks still own validity', () => {
-  const options = recommendationOptions({ capabilityPrediction: true, actionPrediction: true });
+  const options = recommendationOptions({ actionPrediction: true });
   const a = predictionSchema(catalog, [{ path: '/private/a' }], options);
   const b = predictionSchema([], [], { ...options, maxSuggestedActions: 0 });
   assert.deepEqual(a, b);

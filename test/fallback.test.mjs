@@ -128,7 +128,7 @@ const action = { tool: 'bash', arguments: { command: 'fixture only' } };
 test('prefetch distinguishes invalid, empty, partial, disabled and action failures', async () => {
   let value;
   const f = predictionSdk(() => { if (value instanceof Error) throw value; return value; });
-  const args = { sdk: f.sdk, query: 'task', catalog, ctx: { cwd, modelRegistry: f.registry, sessionManager: {} }, options: { capabilityPrediction: true, actionPrediction: true } };
+  const args = { sdk: f.sdk, query: 'task', catalog, ctx: { cwd, modelRegistry: f.registry, sessionManager: {} }, options: { enabled: true, actionPrediction: true } };
   for (value of [new Error('HTTP 429'), 'SECRET INVALID JSON', null, {}, { suggestions: {} }, { suggestions: [{ id: 'unknown', confidence: 1 }] }]) {
     const before = f.counts();
     const out = await runPrefetch(args);
@@ -151,7 +151,7 @@ test('prefetch distinguishes invalid, empty, partial, disabled and action failur
   const partial = await runPrefetch(args);
   full(partial, 2); assert.equal(partial.prefetch.rounds.length, 1, 'existing valid action evidence retained');
   value = new Error('HTTP 429');
-  const disabled = await runPrefetch({ ...args, options: { actionPrediction: true } });
+  const disabled = await runPrefetch({ ...args, options: { enabled: false, actionPrediction: true } });
   assert.equal(disabled.fallback, undefined); assert.deepEqual(disabled.suggestions, []);
   const cancelled = await runPrefetch({ ...args, signal: AbortSignal.abort() });
   assert.equal(cancelled.fallback, undefined);
@@ -170,7 +170,7 @@ function carrier(result) { return result.messages.find(m => m.customType === 'ca
 
 test('outer setup failure delivers full fallback including empty catalog, only when capability prediction enabled', async () => {
   for (const nextSkills of [skills, []]) {
-    const s = setup({ settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } } });
+    const s = setup({ settings: { capabilityDiscovery: { recommendation: { enabled: true } } } });
     const ctx = context(); await start(s, ctx, nextSkills);
     const message = carrier(await s.handlers.context({ messages: [] }, ctx));
     assert.ok(message);
@@ -188,7 +188,7 @@ test('outer setup failure delivers full fallback including empty catalog, only w
 
 test('full preparation path delivers routing errors to content and details without extra actions', async () => {
   const f = predictionSdk(() => { throw new Error('HTTP 429'); });
-  const s = setup({ sdk: f.sdk, tools, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } } });
+  const s = setup({ sdk: f.sdk, tools, settings: { capabilityDiscovery: { recommendation: { enabled: true } } } });
   const ctx = context(f.registry); await start(s, ctx);
   const result = await s.handlers.context({ messages: [] }, ctx);
   const message = carrier(result);
@@ -203,7 +203,7 @@ test('full preparation path delivers routing errors to content and details witho
 
 test('preparation internal deadline falls back but cancellation and invalidation suppress late fallback', async t => {
   const register = predict => (pi, deps) => registerDiscovery(pi, { ...deps, sdk: {}, predict });
-  const timed = setup({ settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } }, register: register(async ({ signal }) => { signal.throwIfAborted(); }) });
+  const timed = setup({ settings: { capabilityDiscovery: { recommendation: { enabled: true } } }, register: register(async ({ signal }) => { signal.throwIfAborted(); }) });
   const ctx = context(); await start(timed, ctx);
   t.mock.method(AbortSignal, 'timeout', () => AbortSignal.abort(new DOMException('deadline', 'TimeoutError')));
   const timedMessage = carrier(await timed.handlers.context({ messages: [] }, ctx));
@@ -212,7 +212,7 @@ test('preparation internal deadline falls back but cancellation and invalidation
   for (const invalidate of ['caller', 'session_switch', 'agent_end', 'new-input']) {
     let finish, began;
     const started = new Promise(resolve => { began = resolve; });
-    const s = setup({ settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } }, register: register(async () => {
+    const s = setup({ settings: { capabilityDiscovery: { recommendation: { enabled: true } } }, register: register(async () => {
       began(); await new Promise(resolve => { finish = resolve; }); throw new Error('HTTP 429');
     }) });
     const current = context(), controller = new AbortController(); current.signal = controller.signal;
@@ -230,7 +230,7 @@ test('preparation internal deadline falls back but cancellation and invalidation
 test('model initialization and historical context failures also deliver fallback without a model request', async () => {
   const f = predictionSdk(() => ({ suggestions: [] }));
   for (const failure of ['model', 'history']) {
-    const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } } });
+    const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { enabled: true } } } });
     const ctx = context(failure === 'model' ? { find: () => undefined } : f.registry);
     if (failure === 'history') ctx.entries.push({ type: 'message', message: { role: 'user', content: 'history' } });
     await start(s, ctx);
@@ -248,7 +248,7 @@ test('in-flight preparation deadline delivers fallback, not cancellation silence
     deadline.abort(new DOMException('deadline', 'TimeoutError'));
     return { suggestions: [] };
   });
-  const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true } } } });
+  const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { enabled: true } } } });
   const ctx = context(f.registry); await start(s, ctx);
   const message = carrier(await s.handlers.context({ messages: [] }, ctx));
   full(message.details, 10);
@@ -259,7 +259,7 @@ test('in-flight preparation deadline delivers fallback, not cancellation silence
 test('valid empty predictions and action-only failures do not inject a fallback directory', async () => {
   let value = { suggestions: [] };
   const f = predictionSdk(() => value);
-  const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { capabilityPrediction: true, actionPrediction: true } } } });
+  const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true } } } });
   const ctx = context(f.registry); await start(s, ctx);
   assert.equal(carrier(await s.handlers.context({ messages: [] }, ctx)), undefined);
   value = { suggestions: [valid], actions: [action] };

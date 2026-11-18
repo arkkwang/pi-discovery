@@ -14,7 +14,7 @@ export function createInternalSession(sdk, ctx, kind, options) {
   manager.appendSessionInfo(`pi-discovery · ${kind} · ${options.model} · ${manager.getSessionId()}`);
   return manager;
 }
-export async function requestModel({ sdk, ctx, options, manager, prompts, schema, signal,
+export async function requestModel({ sdk, ctx, options, manager, prompts, signal,
   trace = () => {}, onRequest = () => {}, onInference = () => {} }) {
   let session, requests = 0;
   const abort = () => { if (session) void session.abort(); };
@@ -39,10 +39,10 @@ export async function requestModel({ sdk, ctx, options, manager, prompts, schema
       signal?.throwIfAborted();
       if (requests++) throw new Error('Only one prediction request is permitted');
       onRequest(); trace('request', { request: 1 });
-      return ctx.modelRegistry.streamSimple(selected, context, { ...streamOptions,
-        onPayload: async (payload, selectedModel) => ({ ...await streamOptions?.onPayload?.(payload, selectedModel) ?? payload,
-          response_format: { type: 'json_schema', json_schema: { name: 'prediction', strict: true, schema } } }),
-      });
+      // The output shape lives in the prompt (schema plus a bare-JSON instruction) and in
+      // host validation. No provider-specific response_format is sent: services differ on
+      // json_schema support, and one rejection would fail the whole prediction session.
+      return ctx.modelRegistry.streamSimple(selected, context, streamOptions);
     };
     await session.bindExtensions({});
     signal?.throwIfAborted();

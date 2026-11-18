@@ -160,33 +160,33 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
       models: [{ id: 'iq3', name: 'fixture', reasoning: true, input: ['text'], contextWindow: 32000, maxTokens: 2048, cost: usage.cost }] });
     const model = runtime.getModel('llama', 'iq3');
     const sdkFixture = { ...sdk, SessionManager: isolatedSessions(sdk, cwd), getAgentDir: () => cwd, ModelRuntime: { create: async () => runtime } };
-    let observedPayload, observedSystem, observedInput, expectedLimit = 3, expectedThinking = 'medium';
+    let observedSchema, observedSystem, observedInput, expectedLimit = 3, expectedThinking = 'medium';
     let predictions = 0, value = { suggestions: [{ type: 'skill', name: 'test', confidence: 0.8 },
       { type: 'action', confidence: 0.95, tool: 'read', arguments: { path: file } }, { type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: "printf 'CUSTOM BASH RESULT'" } },
     ] };
     const registry = { find: () => model, streamSimple: async (_model, context, requestOptions) => {
       assert.equal(requestOptions.reasoning, expectedThinking);
       assert.notEqual(requestOptions.maxTokens, 1024);
-      observedPayload = await requestOptions.onPayload({ model: _model.id }, _model);
-      assert.equal(observedPayload.response_format.type, 'json_schema');
-      assert.equal(observedPayload.response_format.json_schema.strict, true);
-      const schema = observedPayload.response_format.json_schema.schema;
-      assert.equal(schema.additionalProperties, false);
-      assert.deepEqual(schema.required, Object.keys(schema.properties));
-      assert.deepEqual(Object.keys(schema.properties), ['suggestions']);
-      assert.equal(schema.properties.suggestions.maxItems, undefined);
+      // The SDK's own provider-payload hook stays; this layer no longer rewrites the payload.
+      const payload = await requestOptions.onPayload({ model: _model.id }, _model);
+      assert.deepEqual(payload, { model: _model.id }, 'no response_format or provider-specific rewrite');
       predictions++;
       assert.deepEqual(resolveTranscriptTools(context.messages, 'none').requestTools, []);
       const system = context.messages.filter(m => m.role === 'system').map(m => m.sections?.preamble ?? m.content).join('\n');
       observedSystem = system;
-      assert.ok(!system.includes(JSON.stringify(schema)), 'schema belongs in user context');
       assert.match(system, /bare JSON.*no Markdown.*no code fences/);
       observedInput = context.messages.findLast(m => m.role === 'user').content.filter(p => p.type === 'text').map(p => p.text).join('');
-      assert.ok(observedInput.includes(JSON.stringify(schema)));
+      // The schema travels in the user prompt rather than a response_format parameter.
+      observedSchema = JSON.parse(observedInput.split('## Output Schema\n')[1].split('\n')[0]);
+      assert.equal(observedSchema.additionalProperties, false);
+      assert.deepEqual(observedSchema.required, Object.keys(observedSchema.properties));
+      assert.deepEqual(Object.keys(observedSchema.properties), ['suggestions']);
+      assert.equal(observedSchema.properties.suggestions.maxItems, undefined);
+      assert.ok(!system.includes(JSON.stringify(observedSchema)), 'schema belongs in user context');
       assert.ok(observedInput.includes(`Entry path: ${file}`));
       assert.doesNotMatch(system, /Skill entry paths|Skill file index/);
       assert.doesNotMatch(JSON.stringify(context), /REAL PRIVATE DOCUMENT BODY/, 'prediction never receives tool result contents');
-      const stream = createAssistantMessageEventStream(), response = answer(Object.fromEntries(Object.entries(value).filter(([key]) => schema.required.includes(key))));
+      const stream = createAssistantMessageEventStream(), response = answer(Object.fromEntries(Object.entries(value).filter(([key]) => observedSchema.required.includes(key))));
       stream.push({ type: 'start', partial: response }); stream.push({ type: 'done', reason: 'stop', message: response });
       return stream;
     } };
@@ -406,13 +406,13 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const output = { message: prepared.messages.find(m => m.customType === PREFETCH_TYPE) };
     assert.equal(output.message.customType, PREFETCH_TYPE);
     assert.deepEqual(output.message.details.suggestions.map(s => s.type), ['skill', 'mcp', 'tool', 'tool', 'action', 'action']);
-    assert.ok(observedPayload.response_format.json_schema.schema.properties.suggestions.items.anyOf.every(branch => !branch.properties.id));
+    assert.ok(observedSchema.properties.suggestions.items.anyOf.every(branch => !branch.properties.id));
     const ids = observedInput;
     for (const id of ['skill:test', 'mcp:mcp__pending', 'mcp:mcp__ready', 'mcp:mcp__undescribed', 'tool:notify', 'tool:subagent_start']) assert.ok(ids.includes(id));
     assert.ok(!ids.includes('tool:hidden_tool'));
     const recommendationSession = sdk.SessionManager.open(hook.diagnostics.findLast(e => e.data.event === 'complete').data.discoverySessionFile);
     const savedSchema = recommendationSession.getEntries().find(e => e.customType === 'capability-recommendation-schema');
-    assert.deepEqual(savedSchema.data, observedPayload.response_format.json_schema);
+    assert.deepEqual(savedSchema.data, { schema: observedSchema });
     assert.deepEqual([...observedInput.matchAll(/^### (mcp:[a-z_]+)/gm)].map(m => m[1]).sort(),
       ['mcp:mcp__pending', 'mcp:mcp__ready', 'mcp:mcp__undescribed']);
     assert.equal(hook.diagnostics.findLast(e => e.data.event === 'complete').data.capabilities.mcp, 3);

@@ -35,7 +35,8 @@ test('one tool-free medium-thinking request; mixed types, score sorting and trus
     assert.match(body.messages[1].content, /## Available capabilities/);
     assert.match(body.messages[1].content, /### mcp:mcp__browser/);
     assert.match(body.messages[1].content, /## Current request\n检查网页并修复/);
-    assert.equal(body.response_format.json_schema.schema.properties.suggestions.items.properties.id.enum, undefined);
+    assert.ok(!('response_format' in body), 'no json_schema request parameter');
+    assert.match(body.messages[0].content, /Return only JSON \{"suggestions":\[\{"id":"exact catalog ID","confidence":0\.9\}\]\}/);
     return reply({ suggestions: [...suggestions, { id: 'skill:engineering-practice', confidence: 0.2 }] });
   });
   assert.deepEqual(await routeCapabilities('检查网页并修复', catalog, registry), [
@@ -156,8 +157,9 @@ test('Skill recommendations no longer exclude deferred tools from semantic loadi
   const s = setup({ tools: [...tools, ...deferredTools], skills: [{ ...catalog[0], filePath: catalog[0].path }] });
   await s.prompt();
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
-    assert.equal(JSON.parse(options.body).response_format.json_schema.schema.properties.suggestions.items.properties.id.enum, undefined);
-    const ids = JSON.parse(options.body).messages.map(m => m.content).join('\n');
+    const body = JSON.parse(options.body);
+    assert.ok(!('response_format' in body), 'no json_schema request parameter');
+    const ids = body.messages.map(m => m.content).join('\n');
     assert.ok(ids.includes('tool:subagent_start'));
     assert.ok(ids.includes('tool:notify'));
     assert.ok(ids.includes('tool:script_helper'));
@@ -200,7 +202,7 @@ test('search thinking follows settings independently, with model effort mapping 
   assert.equal(bodies.length, 2);
 });
 
-test('configured provider/model and empty catalog schema', async t => {
+test('configured provider/model and empty catalog request', async t => {
   const custom = { ...registry, find: (provider, id) => {
     assert.equal(provider, 'custom'); assert.equal(id, 'small');
     return { id, api: 'openai-completions', baseUrl: 'http://localhost/v1' };
@@ -208,9 +210,8 @@ test('configured provider/model and empty catalog schema', async t => {
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     const body = JSON.parse(options.body);
     assert.equal(body.model, 'small');
-    const schema = body.response_format.json_schema.schema;
-    assert.equal(schema.properties.suggestions.maxItems, undefined);
-    assert.doesNotMatch(JSON.stringify(schema), /"enum":\[\]/);
+    assert.ok(!('response_format' in body), 'no json_schema request parameter');
+    assert.match(body.messages[1].content, /## Current request\ntask$/);
     return reply({ suggestions: [] });
   });
   assert.deepEqual(await routeCapabilities('task', [], custom, undefined, { model: 'custom/small' }), []);

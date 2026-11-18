@@ -145,11 +145,11 @@ ${query}`;
     const files = [...skillFileIndex(catalog.filter(c => c.type === 'skill')), ...tree.files];
     signal?.throwIfAborted();
     const schema = predictionSchema(catalog, files, options);
-    manager.appendCustomEntry('capability-recommendation-schema', { name: 'prediction', strict: true, schema });
+    manager.appendCustomEntry('capability-recommendation-schema', { schema });
     const prompts = buildPredictionPrompts({ options, catalog, tree, cwd: ctx.cwd, query,
       retained: retainedReadIndex(files, readPaths, ctx.cwd), schema });
     input = prompts.input;
-    const value = await requestModel({ sdk, ctx, options, manager, prompts, schema, signal, trace,
+    const value = await requestModel({ sdk, ctx, options, manager, prompts, signal, trace,
       onRequest: () => { requests++; }, onInference: ms => { inferenceMs = ms; } });
     prediction = validatePrediction(value, catalog, files, options);
     predictionCompleted = true;

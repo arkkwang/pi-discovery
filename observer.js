@@ -1,5 +1,5 @@
 import { createInternalSession, requestModel } from './model-request.js';
-import { buildTrajectoryPrompts, trajectorySchema } from './prompts.js';
+import { buildTrajectoryPrompts } from './prompts.js';
 import { trajectoryOptions } from './config.js';
 
 export function validateTrajectory(value) {
@@ -34,7 +34,7 @@ export async function runTrajectoryReview({ sdk, ctx, options, trajectory, skill
   });
   let warnings = [], requests = 0, inferenceMs = 0, failure;
   try {
-    warnings = validateTrajectory(await requestModel({ sdk, ctx, options, manager, prompts, schema: trajectorySchema, signal, trace,
+    warnings = validateTrajectory(await requestModel({ sdk, ctx, options, manager, prompts, signal, trace,
       onRequest: () => { requests++; }, onInference: ms => { inferenceMs = ms; } }));
   } catch {
     failure = signal?.aborted ? 'cancelled-or-timeout' : requests ? 'prediction-error' : 'setup-error';

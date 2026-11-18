@@ -124,9 +124,9 @@ pi install .
 ## 模板、Schema 与宿主校验
 
 - `prompts.js` 分别提供准备与审查模板。System 只写固定职责和格式指导；目录、路径、预算、主 Agent 系统/用户内容和输出 Schema 放 User 中，不把动态材料升为审查模型的系统权限。
-- 准备 Schema 是单个 `suggestions` 数组，项为能力对象（`type`/`name`/`confidence`）或 `actionPrediction` 开启时的动作对象（`type: "action"`/`tool`/`arguments`/`confidence`）；不随目录、路径或预算增长，`read.path`/`bash.command` 是 string。手动搜索暂保持自身路由返回形态，并移除目录 ID enum。审查 Schema 固定为数组套二字符串数组。
-- 请求携带 `response_format.type=json_schema, strict=true`；宿主逐项验证当次 Schema、当次能力 `type`/`name` 是否在目录中、动作参数 path 是否为实际候选、动作项数量是否在上限内及参数约束。未知 name/path、额外 warnings 字段或错误二元组会拒绝；不靠宽松解析修复模型返回，不自动重试。
-- 一些兼容服务不严格执行 Schema。实际 Flash 曾把非空二元组输出为非法的 `[{"字符串","字符串"}]`；模板现在明确给出完整 `[["提醒","来源及原文"]]` 示例，外层仍严格拒绝错误格式。
+- 准备 Schema 是单个 `suggestions` 数组，项为能力对象（`type`/`name`/`confidence`）或 `actionPrediction` 开启时的动作对象（`type: "action"`/`tool`/`arguments`/`confidence`）；不随目录、路径或预算增长，`read.path`/`bash.command` 是 string。手动搜索在提示词中说明自身的 JSON 形态（目录 ID 与 confidence，不带 ID enum）。审查 Schema 固定为数组套二字符串数组。
+- 提示词要求只输出一个裸 JSON 对象（含 Schema 与指令），请求不携带 `response_format`；例如 DeepSeek 对 `type=json_schema` 会返回 `This response_format type is unavailable now`。宿主仍逐项验证当次 Schema、当次能力 `type`/`name` 是否在目录中、动作参数 path 是否为实际候选、动作项数量是否在上限内及参数约束。未知 name/path、额外 warnings 字段或错误二元组会拒绝；不靠宽松解析修复模型返回，不自动重试。
+- 没有服务端约束输出必须符合 Schema。实际 Flash 曾把非空二元组输出为非法的 `[{"字符串","字符串"}]`；模板现在明确给出完整 `[["提醒","来源及原文"]]` 示例，外层仍严格拒绝错误格式。
 
 ## 自动准备、自动展开与读取复用
 

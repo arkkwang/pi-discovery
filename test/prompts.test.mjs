@@ -33,10 +33,24 @@ for (const actionPrediction of [false, true]) test(`dynamic prompts and strict o
   assert.equal(input.includes('src/main.js'), actionPrediction);
   assert.equal(input.includes('/already/read.md'), actionPrediction);
   assert.equal(input.includes('PROJECT-RULES'), false);
-  const enabled = ['suggestions', ...(actionPrediction ? ['actions'] : [])];
+  const enabled = ['suggestions'];
   assert.deepEqual(schema.required, enabled);
   assert.deepEqual(Object.keys(schema.properties), enabled);
-  for (const field of ['suggestions', 'actions', 'warnings']) assert.equal(systemPrompt.includes({ suggestions: '## Capability suggestions', actions: '## Preparation actions', warnings: '## Trajectory warnings' }[field]), enabled.includes(field));
+  const branches = schema.properties.suggestions.items.anyOf;
+  assert.deepEqual([...new Set(branches.map(branch => branch.properties.type.const))].sort(),
+    [...(actionPrediction ? ['action'] : []), 'mcp', 'skill', 'tool']);
+  for (const branch of branches) {
+    assert.equal(branch.additionalProperties, false);
+    assert.deepEqual([...branch.required].sort(), Object.keys(branch.properties).sort());
+    assert.deepEqual(branch.properties.confidence, { type: 'number', minimum: 0, maximum: 1 });
+    if (branch.properties.type.const === 'action') {
+      assert.ok(['read', 'bash'].includes(branch.properties.tool.const));
+      assert.equal(branch.properties.arguments.additionalProperties, false);
+    } else assert.equal(branch.properties.name.type, 'string');
+  }
+  if (actionPrediction) assert.deepEqual(branches.filter(branch => branch.properties.type.const === 'action')
+    .map(branch => branch.properties.tool.const).sort(), ['bash', 'read']);
+  for (const field of ['suggestions', 'actions', 'warnings']) assert.equal(systemPrompt.includes({ suggestions: '## Capability suggestions', actions: '## Preparation actions', warnings: '## Trajectory warnings' }[field]), field === 'suggestions' || field === 'actions' && actionPrediction);
   if (actionPrediction) {
     assert.match(systemPrompt, /verbatim/);
     assert.match(systemPrompt, /never absolute paths|Never convert/);
@@ -44,17 +58,17 @@ for (const actionPrediction of [false, true]) test(`dynamic prompts and strict o
   assert.doesNotMatch(systemPrompt, /\{"suggestions":\[/);
   assert.match(input, /\{"suggestions":\[/);
   const response = Object.fromEntries(enabled.map(key => [key, []]));
-  assert.deepEqual(validatePrediction(response, catalog, files, options), { suggestions: [], actions: [], dropped: [] });
+  assert.deepEqual(validatePrediction(response, catalog, files, options), { suggestions: [], dropped: [] });
   for (const key of enabled) {
     const missing = { ...response }; delete missing[key];
     const result = validatePrediction(missing, catalog, files, options);
     assert.deepEqual(result.suggestions, []);
-    assert.deepEqual(result.actions, []);
+    assert.equal('actions' in result, false);
     assert.deepEqual(result.dropped, [{ kind: key === 'suggestions' ? 'suggestion' : 'action', reason: 'missing-field' }]);
   }
   for (const key of ['suggestions', 'actions', 'warnings'].filter(key => !enabled.includes(key))) {
     const result = validatePrediction({ ...response, [key]: [] }, catalog, files, options);
-    assert.ok(!result.suggestions.length && !result.actions.length);
+    assert.ok(!result.suggestions.length);
     assert.deepEqual(result.dropped, [{ kind: 'field', reason: 'unknown-field', item: key }]);
   }
 });

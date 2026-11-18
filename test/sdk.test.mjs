@@ -184,8 +184,8 @@ test('resource loader replaces both built-ins once; settings and request additio
     const afterInput = convertResponsesMessages(model, { messages: after }, new Set(), options);
     assert.deepEqual(afterInput.slice(0, beforeInput.length), beforeInput);
     assert.equal(afterInput.at(-1).type, 'additional_tools');
-    assert.deepEqual(resolveTranscriptTools(messages, true).requestTools, resolveTranscriptTools(after, true).requestTools);
-    assert.equal(resolveTranscriptTools(after, false).requestTools.length, 2, 'nonincremental interfaces still change top-level tools');
+    assert.deepEqual(resolveTranscriptTools(messages, 'additions').requestTools, resolveTranscriptTools(after, 'additions').requestTools);
+    assert.equal(resolveTranscriptTools(after, 'none').requestTools.length, 2, 'nonincremental interfaces still change top-level tools');
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 

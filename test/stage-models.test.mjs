@@ -38,7 +38,7 @@ function fixture(value = config) {
         prompt: async input => {
           sessionManager.appendMessage({ role: 'user', content: input });
           await session.agent.streamFunction(model, {}, {});
-          const value = model.provider === 'review-provider' ? [] : { suggestions: [{ id: 'skill:method', confidence: 1 }] };
+          const value = model.provider === 'review-provider' ? [] : { suggestions: [{ type: 'skill', name: 'method', confidence: 1 }] };
           session.messages.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: JSON.stringify(value) }] });
         } };
       return { session };
@@ -104,7 +104,7 @@ test('three root groups; defaults and every nested key are validated independent
   assert.deepEqual(Object.keys(defaults), ['toolSearch', 'recommendation', 'trajectory']);
   assert.deepEqual(defaults.toolSearch, { enabled: true, model: 'llama/iq3', thinkingLevel: 'medium' });
   assert.deepEqual(defaults.recommendation, { enabled: false, model: 'llama/iq3', actionPrediction: false,
-    maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
+    maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [], autoExpand: { enabled: false, minConfidence: 0.85 } });
   assert.deepEqual(defaults.trajectory, { model: 'llama/iq3', enabled: false, everySteps: 5, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
   const changed = discoveryOptions({ recommendation: { model: 'custom/a', thinkingLevel: 'high' } });
   assert.deepEqual(changed.trajectory, defaults.trajectory, 'no cross-stage inheritance');

@@ -254,3 +254,28 @@ npm pack --dry-run --ignore-scripts --json
 - 提交前命令：`PI_DISCOVERY_SDK_ROOT=/Users/lei/.npm/_npx/2453649666e7772c/node_modules/@earendil-works/pi-coding-agent PI_DISCOVERY_LIVE=0 PI_DISCOVERY_PREFETCH_LIVE=0 PI_DISCOVERY_OBSERVER_LIVE=0 npm test`。
 - 结果：112 项，106 pass / 0 fail / 0 cancelled / 6 skip；仅真实模型测试跳过。日志 `/tmp/pi-discovery-precommit.log`。
 - 用户授权提交本轮代码、测试和文档；仅本地提交，不推送或发布，不改版本。
+
+
+## 统一 suggestions 与置信度自动展开（当前切片）
+
+### 已确认契约
+
+- 输入时推荐只返回 `{suggestions:[...]}`。能力项为 `{type: skill|mcp|tool, name, confidence}`；动作项为 `{type: action, tool: read|bash, arguments, confidence}`，不再有独立 actions、带类型前缀的 id 或 reason。
+- `actionPrediction` 只控制是否推荐动作；`maxSuggestedActions` 仍限制动作推荐数量。所有合法项统一保留，重复项取最高分；部分无效项逐项丢弃，合法动作同样属于有效建议。
+- 新增 `autoExpand: {enabled:false, minConfidence:0.85}`。关闭时仅交付建议；开启时仅 confidence >= 阈值的项展开：读 Skill 入口、加载 MCP/延迟工具定义、执行动作。低分项仍交付，fallback 的 null 置信度目录不展开。
+- 动作按只读准备提示词自动执行，无逐项确认；Bash 仍非程序强制只读沙箱。保留现有路径、文件大小、动作预算和超时防护。
+
+### 实现与宿主证据
+
+- config/prompts/prefetch/discovery 同步更新；Skill 与 action 读共用读取去重。MCP 展开复用宿主 readiness 与作用域受限的原生搜索，加载整个匹配服务而非固定前八个工具；单个非 MCP 工具展开不等待无关服务。原生 MCP readiness 仍可能等待其他待连接服务。
+- 技术探查发现：context 钩子位于宿主可执行工具快照之后，直接在那里激活并声明工具会造成首响应不能执行。因此仅在自动展开开启时插入隐藏 starting-message boundary，在用户消息保存后、工具快照前完成准备并替换为实际 carrier；推荐-only 保留 context 路径。两条路径都只准备一次且不额外触发模型轮次。
+- 首请求从实际展开记录投影工具定义；仅声明宿主当前仍 active 的工具并使用当前定义。恢复/切分支不凭历史 carrier 重新加载工具。若首响应直接结束且原生工具声明未落盘，历史执行证据保留，但下一输入需正常推荐展开或 tool_search 再加载。
+- 新增真实 SDK 首响应执行、接收确认/落盘先于准备、取消、resume/fork 与声明一致性回归；另覆盖 pending MCP、超过八个成员、作用域、重复加载和取消等待。独立复核发现并修复非字符串 type/name 校验和最后一项展开取消状态的问题。
+- 修正原有 SDK 测试接口漂移：`resolveTranscriptTools` 的布尔参数更新为当前 SDK 的 `none` / `additions`，保留非增量工具完整性断言，未修改宿主 SDK。
+
+### 验证与交付范围
+
+- Windows / Git Bash：`npm test`：123 项，98 pass / 0 fail / 25 skip。
+- 指定本机 Pi SDK，全部 LIVE 开关为 0：123 项，117 pass / 0 fail / 6 skip（仅真实模型调用跳过）。日志 `/tmp/pi-discovery-unified-default.log` 与 `/tmp/pi-discovery-unified-sdk.log`。
+- 指定的 `../home-scripts/home-scripts/pi/agent/settings.json` 已新增 `autoExpand` 默认值，并通过完整 discoveryOptions 校验；保留现有 recommendation.enabled=false 和其他设置。没有修改 home-scripts 其他既有未提交改动。
+- 双语 README 已更新。未实测 macOS/Linux、真实模型推荐质量或真实 MCP 网络连接；未修改运行目录配置、安装链接、版本、生产产物，未部署、发布、提交或重启服务。

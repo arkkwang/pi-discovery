@@ -122,13 +122,13 @@ function predictionSdk(getValue) {
   return { sdk, registry: { ...registry, streamSimple: async () => { requests++; } }, counts: () => ({ requests, actions }) };
 }
 const catalog = [{ type: 'skill', name: 'skill-0', path: skills[0].filePath, description: 'Method' }, { type: 'tool', name: 'delegate' }];
-const valid = { id: 'skill:skill-0', confidence: 0.5 };
-const action = { tool: 'bash', arguments: { command: 'fixture only' } };
+const valid = { type: 'skill', name: 'skill-0', confidence: 0.5 };
+const action = { type: 'action', tool: 'bash', arguments: { command: 'fixture only' }, confidence: 0.95 };
 
 test('prefetch distinguishes invalid, empty, partial, disabled and action failures', async () => {
   let value;
   const f = predictionSdk(() => { if (value instanceof Error) throw value; return value; });
-  const args = { sdk: f.sdk, query: 'task', catalog, ctx: { cwd, modelRegistry: f.registry, sessionManager: {} }, options: { enabled: true, actionPrediction: true } };
+  const args = { sdk: f.sdk, query: 'task', catalog, ctx: { cwd, modelRegistry: f.registry, sessionManager: {} }, options: { enabled: true, actionPrediction: true, autoExpand: { enabled: true } } };
   for (value of [new Error('HTTP 429'), 'SECRET INVALID JSON', null, {}, { suggestions: {} }, { suggestions: [{ id: 'unknown', confidence: 1 }] }]) {
     const before = f.counts();
     const out = await runPrefetch(args);
@@ -138,18 +138,19 @@ test('prefetch distinguishes invalid, empty, partial, disabled and action failur
     assert.equal(out.prefetch.rounds.length, 0);
     assert.doesNotMatch(out.routingError, /SECRET INVALID JSON/);
   }
-  for (value of [{ suggestions: [], actions: [] }, { suggestions: [valid, { id: 'unknown', confidence: 1 }], actions: [] }]) {
+  for (value of [{ suggestions: [] }, { suggestions: [valid, { type: 'skill', name: 'unknown', confidence: 1 }] }]) {
     const out = await runPrefetch(args);
     assert.equal(out.fallback, undefined); assert.equal(out.routingError, undefined);
     assert.equal(out.suggestions.length, value.suggestions.length ? 1 : 0);
   }
-  value = { suggestions: [valid], actions: [action] };
+  value = { suggestions: [valid, action] };
   const actionError = await runPrefetch(args);
   assert.equal(actionError.fallback, undefined);
   assert.equal(actionError.prefetch.rounds[0].messages[1].isError, true);
-  value = { suggestions: [{ id: 'unknown', confidence: 1 }], actions: [action] };
+  value = { suggestions: [{ type: 'skill', name: 'unknown', confidence: 1 }, action] };
   const partial = await runPrefetch(args);
-  full(partial, 2); assert.equal(partial.prefetch.rounds.length, 1, 'existing valid action evidence retained');
+  assert.equal(partial.fallback, undefined); assert.deepEqual(partial.suggestions, [action]);
+  assert.equal(partial.prefetch.rounds.length, 1, 'valid action remains a suggestion despite invalid capability');
   value = new Error('HTTP 429');
   const disabled = await runPrefetch({ ...args, options: { enabled: false, actionPrediction: true } });
   assert.equal(disabled.fallback, undefined); assert.deepEqual(disabled.suggestions, []);
@@ -259,14 +260,14 @@ test('in-flight preparation deadline delivers fallback, not cancellation silence
 test('valid empty predictions and action-only failures do not inject a fallback directory', async () => {
   let value = { suggestions: [] };
   const f = predictionSdk(() => value);
-  const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true } } } });
+  const s = setup({ sdk: f.sdk, settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, autoExpand: { enabled: true } } } } });
   const ctx = context(f.registry); await start(s, ctx);
   assert.equal(carrier(await s.handlers.context({ messages: [] }, ctx)), undefined);
-  value = { suggestions: [valid], actions: [action] };
+  value = { suggestions: [valid, action] };
   await start(s, ctx);
   const message = carrier(await s.handlers.context({ messages: [] }, ctx));
   assert.equal(message.details.fallback, undefined);
-  assert.equal(message.details.suggestions.length, 1);
+  assert.equal(message.details.suggestions.length, 2);
   assert.equal(message.details.prefetch.rounds[0].messages[1].isError, true);
   assert.doesNotMatch(message.content, /full-catalog|routingError/);
 });

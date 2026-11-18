@@ -17,52 +17,98 @@ const answer = value => ({ role: 'assistant', content: [{ type: 'text', text: JS
   provider: 'llama', model: 'iq3', api: 'openai-completions', usage, timestamp: Date.now(), stopReason: 'stop' });
 
 test('invalid prediction items are dropped without aborting valid ones', () => {
-  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { enabled: false, model: 'llama/iq3', actionPrediction: false, maxSuggestedActions: 0, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
-  assert.deepEqual(recommendationOptions(), { enabled: false, model: 'llama/iq3', actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [] });
-  assert.deepEqual(recommendationOptions({ enabled: true, actionPrediction: true, timeoutMs: 120_000 }), { enabled: true, model: 'llama/iq3', actionPrediction: true, maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 120_000, disableForCwd: [] });
+  assert.deepEqual(recommendationOptions({ maxSuggestedActions: 0 }), { enabled: false, model: 'llama/iq3', actionPrediction: false, maxSuggestedActions: 0, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [], autoExpand: { enabled: false, minConfidence: 0.85 } });
+  assert.deepEqual(recommendationOptions(), { enabled: false, model: 'llama/iq3', actionPrediction: false, maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000, disableForCwd: [], autoExpand: { enabled: false, minConfidence: 0.85 } });
+  assert.deepEqual(recommendationOptions({ enabled: true, actionPrediction: true, timeoutMs: 120_000 }), { enabled: true, model: 'llama/iq3', actionPrediction: true, maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 120_000, disableForCwd: [], autoExpand: { enabled: false, minConfidence: 0.85 } });
   for (const config of [{ prefetch: { maxSuggestedActions: 3 } }, { autoRecommend: 'true' }, { maxSuggestedActions: null }, { maxRunRounds: 3, maxRecommendedRounds: 2 }, { maxSuggestedActions: -1 }, { maxSuggestedActions: 9 }, { timeoutMs: 999 }, { timeoutMs: 600_001 }, { timeoutMs: '60000' }, null]) assert.throws(() => recommendationOptions(config));
   const catalog = [{ type: 'skill', name: 'test' }], files = [{ path: '/skill/SKILL.md' }];
   const opts = { enabled: true, actionPrediction: true, maxSuggestedActions: 3 };
-  const kept = { tool: 'bash', arguments: { command: 'pwd' } };
+  const kept = { type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: 'pwd' } };
   for (const command of ['', '   ', 42, 'x'.repeat(2001), 'a\0b']) {
-    const result = validatePrediction({ suggestions: [], actions: [{ tool: 'bash', arguments: { command } }, kept] }, catalog, files, opts);
-    assert.deepEqual(result.actions, [kept]);
-    assert.deepEqual(result.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'bash', arguments: { command } } }]);
+    const result = validatePrediction({ suggestions: [{ type: 'action', confidence: 0.95, tool: 'bash', arguments: { command } }, kept] }, catalog, files, opts);
+    assert.deepEqual(result.suggestions, [kept]);
+    assert.deepEqual(result.dropped, [{ kind: 'action', reason: 'invalid-action', item: { type: 'action', confidence: 0.95, tool: 'bash', arguments: { command } } }]);
   }
-  assert.deepEqual(validatePrediction({ suggestions: [], actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }] }, catalog, files, opts),
-    { suggestions: [], actions: [{ tool: 'bash', arguments: { command: "printf 'custom generated command'" } }], dropped: [] });
-  const read = { tool: 'read', arguments: { path: '/skill/SKILL.md' } };
-  const outside = validatePrediction({ suggestions: [], actions: [{ tool: 'read', arguments: { path: '/secret' } }, read] }, catalog, files, opts);
-  assert.deepEqual(outside.actions, [read]);
-  assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'read', arguments: { path: '/secret' } } }]);
-  assert.equal(validatePrediction({ suggestions: [], actions: [kept, kept] }, catalog, files, opts).actions.length, 1);
-  const overBudget = validatePrediction({ suggestions: [], actions: [kept, { tool: 'bash', arguments: { command: 'ls' } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 1 });
-  assert.deepEqual(overBudget.actions, [kept]);
-  assert.deepEqual(overBudget.dropped, [{ kind: 'action', reason: 'over-budget', item: { tool: 'bash', arguments: { command: 'ls' } } }]);
-  assert.deepEqual(validatePrediction({ suggestions: [], actions: [kept] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 0 }),
-    { suggestions: [], actions: [], dropped: [{ kind: 'action', reason: 'over-budget', item: kept }] });
-  const flattened = validatePrediction({ suggestions: [], actions: [{ tool: 'bash', command: 'pwd' }, { tool: 'read', path: '/skill/SKILL.md' }] }, catalog, files, opts);
-  assert.deepEqual(flattened.actions, []);
+  assert.deepEqual(validatePrediction({ suggestions: [{ type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: "printf 'custom generated command'" } }] }, catalog, files, opts),
+    { suggestions: [{ type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: "printf 'custom generated command'" } }], dropped: [] });
+  const read = { type: 'action', confidence: 0.95, tool: 'read', arguments: { path: '/skill/SKILL.md' } };
+  const outside = validatePrediction({ suggestions: [{ type: 'action', confidence: 0.95, tool: 'read', arguments: { path: '/secret' } }, read] }, catalog, files, opts);
+  assert.deepEqual(outside.suggestions, [read]);
+  assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { type: 'action', confidence: 0.95, tool: 'read', arguments: { path: '/secret' } } }]);
+  assert.equal(validatePrediction({ suggestions: [kept, kept] }, catalog, files, opts).suggestions.length, 1);
+  const overBudget = validatePrediction({ suggestions: [kept, { type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: 'ls' } }] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 1 });
+  assert.deepEqual(overBudget.suggestions, [kept]);
+  assert.deepEqual(overBudget.dropped, [{ kind: 'action', reason: 'over-budget', item: { type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: 'ls' } } }]);
+  assert.deepEqual(validatePrediction({ suggestions: [kept] }, catalog, files, { actionPrediction: true, maxSuggestedActions: 0 }),
+    { suggestions: [], dropped: [{ kind: 'action', reason: 'over-budget', item: kept }] });
+  const flattened = validatePrediction({ suggestions: [{ type: 'action', confidence: 0.95, tool: 'bash', command: 'pwd' }, { type: 'action', confidence: 0.95, tool: 'read', path: '/skill/SKILL.md' }] }, catalog, files, opts);
+  assert.deepEqual(flattened.suggestions, []);
   assert.equal(flattened.dropped.length, 2);
-  assert.deepEqual(validatePrediction({ suggestions: [{ id: 'skill:test', confidence: 0.9 }, { id: 'unknown', confidence: 1 }, { id: 'skill:test', confidence: 2 }] }, catalog, files, {}).suggestions,
+  assert.deepEqual(validatePrediction({ suggestions: [{ type: 'skill', name: 'test', confidence: 0.9 }, { type: 'skill', name: 'unknown', confidence: 1 }, { type: 'skill', name: 'test', confidence: 2 }] }, catalog, files, {}).suggestions,
     [{ type: 'skill', name: 'test', confidence: 0.9 }]);
 });
 
 test('capability suggestions are always validated; actions remain optional', () => {
-  const catalog = [{ type: 'skill', name: 'test' }];
-  const action = { tool: 'bash', arguments: { command: 'pwd' } };
-  const suggestion = { id: 'skill:test', confidence: 1 };
-  const value = { suggestions: [suggestion], actions: [action] };
-  const withActions = validatePrediction(value, catalog, [], { actionPrediction: true });
-  assert.deepEqual(withActions.suggestions, [{ ...catalog[0], confidence: 1 }]);
-  assert.deepEqual(withActions.actions, [action]);
-  const capabilitiesOnly = validatePrediction(value, catalog, [], { enabled: true });
-  assert.deepEqual(capabilitiesOnly.actions, []);
-  assert.equal(capabilitiesOnly.suggestions.length, 1);
-  assert.deepEqual(capabilitiesOnly.dropped, [{ kind: 'field', reason: 'unknown-field', item: 'actions' }]);
-  const disabled = validatePrediction(value, catalog, []);
-  assert.deepEqual(disabled.suggestions, [{ ...catalog[0], confidence: 1 }]);
-  assert.deepEqual(disabled.actions, []);
+  const catalog = [{ type: 'skill', name: 'test', description: 'From catalog', path: '/skill/SKILL.md' }];
+  const action = { type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: 'pwd' } };
+  const suggestion = { type: 'skill', name: 'test', confidence: 1 };
+  const value = { suggestions: [suggestion, action] };
+  assert.deepEqual(validatePrediction(value, catalog, [], { actionPrediction: true }),
+    { suggestions: [{ ...catalog[0], confidence: 1 }, action], dropped: [] });
+  for (const options of [{ enabled: true }, {}]) {
+    const result = validatePrediction(value, catalog, [], options);
+    assert.deepEqual(result.suggestions, [{ ...catalog[0], confidence: 1 }]);
+    assert.equal(result.dropped.length, 1);
+    assert.equal(result.dropped[0].kind, 'action');
+    assert.deepEqual(result.dropped[0].item, action);
+    assert.equal('actions' in result, false);
+  }
+});
+
+test('duplicates retain highest confidence in first position before action budgeting', () => {
+  const skill = { type: 'skill', name: 'test', confidence: 0.2 };
+  const action = { type: 'action', tool: 'bash', arguments: { command: 'pwd' }, confidence: 0.3 };
+  const other = { type: 'action', tool: 'bash', arguments: { command: 'ls' }, confidence: 1 };
+  const result = validatePrediction({ suggestions: [skill, action, { ...skill, confidence: 0.9 },
+    { ...action, confidence: 0.95 }, { ...action, confidence: 0.1 }, other] },
+    [{ type: 'skill', name: 'test', description: 'Catalog' }], [], { actionPrediction: true, maxSuggestedActions: 1 });
+  assert.deepEqual(result.suggestions, [{ ...skill, description: 'Catalog', confidence: 0.9 }, { ...action, confidence: 0.95 }]);
+  assert.deepEqual(result.dropped, [{ kind: 'action', reason: 'over-budget', item: other }]);
+  for (const confidence of [undefined, null, -0.1, 1.1, NaN, Infinity, '0.9']) {
+    const invalid = { ...action, confidence };
+    const checked = validatePrediction({ suggestions: [invalid] }, [], [], { actionPrediction: true });
+    assert.deepEqual(checked.suggestions, []);
+    assert.equal(checked.dropped[0].kind, 'action');
+    assert.equal(checked.dropped[0].reason, 'invalid-action');
+  }
+});
+
+test('malformed capability types and names degrade per item without coercion', () => {
+  const valid = { type: 'skill', name: 'test', confidence: 0.9 };
+  const catalog = [{ type: 'skill', name: 'test', path: '/skill/SKILL.md' }];
+  const invalid = [
+    { ...valid, type: ['skill'] },
+    { ...valid, name: ['test'] },
+    { ...valid, type: { toString: null } },
+    { ...valid, name: { toString: null } },
+    { ...valid, type: null },
+    { ...valid, name: null },
+  ];
+  const result = validatePrediction({ suggestions: [...invalid, valid] }, catalog, []);
+  assert.deepEqual(result.suggestions, [{ ...catalog[0], confidence: 0.9 }]);
+  assert.deepEqual(result.dropped, invalid.map(item => ({ kind: 'suggestion', reason: 'invalid-capability', item })));
+});
+
+test('autoExpand configuration defaults and threshold boundaries are strict', () => {
+  assert.deepEqual(recommendationOptions().autoExpand, { enabled: false, minConfidence: 0.85 });
+  assert.deepEqual(recommendationOptions({ autoExpand: { enabled: true } }).autoExpand, { enabled: true, minConfidence: 0.85 });
+  for (const minConfidence of [0, 0.85, 1]) {
+    assert.deepEqual(recommendationOptions({ autoExpand: { minConfidence } }).autoExpand, { enabled: false, minConfidence });
+  }
+  for (const autoExpand of [null, false, [], 'true', { enabled: 1 }, { enabled: null }, { extra: true },
+    ...[null, false, '0.85', -0.01, 1.01, NaN, Infinity].map(minConfidence => ({ minConfidence }))]) {
+    assert.throws(() => recommendationOptions({ autoExpand }));
+  }
 });
 
 test('file tree is bounded during traversal and respects nested ignores; Skill index stops at entry files', async () => {
@@ -115,8 +161,8 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const model = runtime.getModel('llama', 'iq3');
     const sdkFixture = { ...sdk, SessionManager: isolatedSessions(sdk, cwd), getAgentDir: () => cwd, ModelRuntime: { create: async () => runtime } };
     let observedPayload, observedSystem, observedInput, expectedLimit = 3, expectedThinking = 'medium';
-    let predictions = 0, value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [
-      { tool: 'read', arguments: { path: file } }, { tool: 'bash', arguments: { command: "printf 'CUSTOM BASH RESULT'" } },
+    let predictions = 0, value = { suggestions: [{ type: 'skill', name: 'test', confidence: 0.8 },
+      { type: 'action', confidence: 0.95, tool: 'read', arguments: { path: file } }, { type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: "printf 'CUSTOM BASH RESULT'" } },
     ] };
     const registry = { find: () => model, streamSimple: async (_model, context, requestOptions) => {
       assert.equal(requestOptions.reasoning, expectedThinking);
@@ -127,10 +173,10 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
       const schema = observedPayload.response_format.json_schema.schema;
       assert.equal(schema.additionalProperties, false);
       assert.deepEqual(schema.required, Object.keys(schema.properties));
-      if (schema.properties.actions) assert.equal(schema.properties.actions.maxItems, undefined);
-      if (schema.properties.actions) assert.deepEqual(schema.properties.actions.items.anyOf.map(a => a.properties.tool.const).sort(), ['bash', 'read']);
+      assert.deepEqual(Object.keys(schema.properties), ['suggestions']);
+      assert.equal(schema.properties.suggestions.maxItems, undefined);
       predictions++;
-      assert.deepEqual(resolveTranscriptTools(context.messages, false).requestTools, []);
+      assert.deepEqual(resolveTranscriptTools(context.messages, 'none').requestTools, []);
       const system = context.messages.filter(m => m.role === 'system').map(m => m.sections?.preamble ?? m.content).join('\n');
       observedSystem = system;
       assert.ok(!system.includes(JSON.stringify(schema)), 'schema belongs in user context');
@@ -146,7 +192,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     } };
     const ctx = { cwd, modelRegistry: registry, sessionManager: parent, ui: { notify() {} } };
     const args = { sdk: sdkFixture, query: 'prepare', catalog: [{ type: 'skill', name: 'test', description: 'Test documents', path: file }],
-      ctx, options: { enabled: true, actionPrediction: true, maxSuggestedActions: 3 }, signal: AbortSignal.timeout(15000) };
+      ctx, options: { enabled: true, actionPrediction: true, maxSuggestedActions: 3, autoExpand: { enabled: true } }, signal: AbortSignal.timeout(15000) };
     const result = await runPrefetch(args);
     assert.equal(predictions, 1); assert.equal(result.prefetch.failure, undefined);
     assert.equal(result.prefetch.rounds.length, 2);
@@ -175,13 +221,13 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
 
     // Mixed valid/invalid output must reach dispatch without losing valid work.
     const validValue = value, traceEvents = [];
-    value = { suggestions: [...value.suggestions, { id: 'unknown', confidence: 1 }], actions: [
-      { tool: 'read', arguments: { path: '/outside' } },
-      { tool: 'bash', command: 'must not execute' }, ...value.actions,
+    value = { suggestions: [{ type: 'skill', name: 'unknown', confidence: 1 },
+      { type: 'action', confidence: 0.95, tool: 'read', arguments: { path: '/outside' } },
+      { type: 'action', confidence: 0.95, tool: 'bash', command: 'must not execute' }, ...value.suggestions,
     ] };
     const partial = await runPrefetch({ ...args, trace: (event, data) => traceEvents.push({ event, ...data }) });
     assert.equal(partial.prefetch.failure, undefined);
-    assert.equal(partial.suggestions.length, 1);
+    assert.equal(partial.suggestions.length, 3);
     assert.equal(partial.prefetch.rounds.length, 2);
     assert.equal(partial.diagnostics.dropped.length, 3);
     assert.deepEqual(traceEvents.find(e => e.event === 'drop').dropped, partial.diagnostics.dropped);
@@ -202,13 +248,87 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.ok(traceEvents.findLast(e => e.event === 'failure').error.length);
     value = validValue;
 
+    // Recommendation and expansion are independent; threshold equality is inclusive.
+    const expansionValue = value;
+    const actionAtThreshold = { type: 'action', tool: 'bash', arguments: { command: "printf 'THRESHOLD RESULT'" }, confidence: 0.85 };
+    value = { suggestions: [actionAtThreshold] };
+    const recommendOnly = await runPrefetch({ ...args, options: { ...args.options, autoExpand: { enabled: false } } });
+    assert.deepEqual(recommendOnly.suggestions, [actionAtThreshold]);
+    assert.equal(recommendOnly.prefetch.rounds.length, 0);
+    value = { suggestions: [{ ...actionAtThreshold, confidence: 0.849 }] };
+    const lowScore = await runPrefetch(args);
+    assert.deepEqual(lowScore.suggestions, value.suggestions);
+    assert.equal(lowScore.prefetch.rounds.length, 0);
+    value = { suggestions: [actionAtThreshold] };
+    const equalScore = await runPrefetch(args);
+    assert.equal(equalScore.prefetch.rounds.length, 1);
+    assert.match(JSON.stringify(equalScore.prefetch.rounds), /THRESHOLD RESULT/);
+
+    value = { suggestions: [{ type: 'skill', name: 'test', confidence: 0.85 }] };
+    const skillOnly = await runPrefetch({ ...args, options: { ...args.options, actionPrediction: false } });
+    assert.equal(skillOnly.prefetch.reads, 1);
+    assert.equal(skillOnly.prefetch.rounds[0].messages[1].content[0].text, body);
+    assert.equal(skillOnly.suggestions[0].path, file);
+    value = { suggestions: [...value.suggestions,
+      { type: 'action', tool: 'read', arguments: { path: file }, confidence: 0.95 }] };
+    const sharedRead = await runPrefetch(args);
+    assert.equal(sharedRead.suggestions.length, 2);
+    assert.equal(sharedRead.prefetch.reads, 1, 'automatic Skill read and explicit read share deduplication');
+    assert.equal(sharedRead.prefetch.rounds.length, 1);
+
+    const expansionCatalog = [...args.catalog, { type: 'mcp', name: 'mcp__fixture', description: 'Fixture service' },
+      { type: 'tool', name: 'inspect', description: 'Fixture tool' }];
+    value = { suggestions: [{ type: 'mcp', name: 'mcp__fixture', confidence: 0.85 },
+      { type: 'tool', name: 'inspect', confidence: 0.9 }] };
+    const expansions = [];
+    const expanded = await runPrefetch({ ...args, catalog: expansionCatalog,
+      options: { ...args.options, actionPrediction: false },
+      expandCapability: async (suggestion, id, signal) => {
+        assert.equal(typeof id, 'string');
+        assert.ok(signal instanceof AbortSignal);
+        expansions.push(suggestion);
+        return { content: [{ type: 'text', text: `EXPANDED ${suggestion.name}` }], details: {} };
+      } });
+    assert.deepEqual(expansions.map(s => s.type), ['mcp', 'tool']);
+    assert.deepEqual(expansions.map(s => s.description), ['Fixture service', 'Fixture tool']);
+    assert.equal(expanded.prefetch.rounds.length, 2);
+    assert.match(JSON.stringify(expanded.prefetch.rounds), /EXPANDED mcp__fixture/);
+    assert.match(JSON.stringify(expanded.prefetch.rounds), /EXPANDED inspect/);
+    // Cancellation in the last expansion must not masquerade as completion or
+    // an ordinary tool error, and the dispatched call/result remain evidence.
+    for (const throws of [false, true]) {
+      const controller = new AbortController();
+      value = { suggestions: [{ type: 'tool', name: 'inspect', confidence: 0.9 }] };
+      const aborted = await runPrefetch({ ...args, catalog: expansionCatalog, signal: controller.signal,
+        options: { ...args.options, actionPrediction: false },
+        expandCapability: async () => {
+          controller.abort(new Error('LAST EXPANSION ABORT'));
+          if (throws) controller.signal.throwIfAborted();
+          return { content: [{ type: 'text', text: 'LAST EXPANSION RETURNED' }], details: {} };
+        } });
+      assert.equal(aborted.prefetch.failure, 'cancelled-or-timeout');
+      assert.equal(aborted.diagnostics.endReason, 'cancelled-or-timeout');
+      assert.equal(aborted.prefetch.rounds.length, 1);
+      const [call, execution] = aborted.prefetch.rounds[0].messages;
+      assert.equal(execution.toolCallId, call.content[0].id);
+      assert.equal(execution.isError, throws);
+      assert.match(JSON.stringify(execution), throws ? /LAST EXPANSION ABORT/ : /LAST EXPANSION RETURNED/);
+      const abortedChild = sdk.SessionManager.open(aborted.diagnostics.discoverySessionFile);
+      const persisted = abortedChild.buildSessionContext().messages.filter(m => m.role === 'toolResult');
+      assert.equal(persisted.length, 1);
+      assert.equal(persisted[0].toolCallId, execution.toolCallId);
+      assert.deepEqual(persisted[0].content, execution.content);
+      assert.deepEqual(aborted.suggestions, [{ ...expansionCatalog.at(-1), confidence: 0.9 }]);
+    }
+    value = expansionValue;
+
     const initialValue = value;
     expectedLimit = 0;
     const beforeWarnings = predictions;
     const disabled = await runPrefetch({ ...args, options: {} });
     assert.equal(predictions, beforeWarnings, 'preparation never runs trajectory analysis');
     assert.equal(disabled.prefetch.requests, 0);
-    value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [] };
+    value = { suggestions: [{ type: 'skill', name: 'test', confidence: 1 }] };
     const capabilityOnly = await runPrefetch({ ...args, options: { enabled: true } });
     assert.equal(capabilityOnly.prefetch.failure, undefined);
     assert.equal(capabilityOnly.diagnostics.tree.entries, 0);
@@ -216,7 +336,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.notEqual(capabilityOnly.diagnostics.discoverySessionId, result.diagnostics.discoverySessionId);
     assert.doesNotMatch(observedSystem, /## Preparation actions|## Trajectory warnings/);
     expectedLimit = 3;
-    value = { suggestions: [], actions: [] };
+    value = { suggestions: [] };
     const withActions = await runPrefetch({ ...args, options: { enabled: true, actionPrediction: true } });
     assert.equal(withActions.prefetch.failure, undefined);
     assert.match(observedSystem, /## Capability suggestions/);
@@ -227,7 +347,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     // A projected full read suppresses host calls, not just their display.
     const readPaths = new Set([readPathKey(file, cwd)]);
     const originalValue = value;
-    value = { suggestions: [], actions: [{ tool: 'read', arguments: { path: file } }] };
+    value = { suggestions: [{ type: 'action', confidence: 0.95, tool: 'read', arguments: { path: file } }] };
     const dedup = await runPrefetch({ ...args, readPaths });
     assert.equal(dedup.prefetch.rounds.length, 0);
     assert.ok(observedInput.includes(file));
@@ -236,17 +356,17 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     const dedupChild = sdk.SessionManager.open(dedup.diagnostics.discoverySessionFile);
     assert.equal(dedupChild.buildSessionContext().messages.filter(m => m.role === 'toolResult').length, 0);
     readPaths.clear();
-    value.actions.push({ tool: 'read', arguments: { path: 'project:skill/SKILL.md' } });
+    value.suggestions.push({ type: 'action', confidence: 0.95, tool: 'read', arguments: { path: 'project:skill/SKILL.md' } });
     const firstRead = await runPrefetch({ ...args, readPaths });
     assert.equal(firstRead.prefetch.reads, 1);
     assert.equal(firstRead.diagnostics.skipped.length, 1);
     assert.ok(readPaths.has(readPathKey(file, cwd)));
-    value = { suggestions: [], actions: [{ tool: 'bash', arguments: { command: 'printf invalidation' } }, { tool: 'read', arguments: { path: file } }] };
+    value = { suggestions: [{ type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: 'printf invalidation' } }, { type: 'action', confidence: 0.95, tool: 'read', arguments: { path: file } }] };
     const afterBash = await runPrefetch({ ...args, readPaths });
     assert.equal(afterBash.prefetch.rounds.length, 2);
     assert.equal(afterBash.prefetch.reads, 1);
     const retainedReads = new Map([[readPathKey(file, cwd), afterBash.prefetch.rounds[1].messages[1]]]);
-    value = { suggestions: [], actions: [{ tool: 'read', arguments: { path: file } }] };
+    value = { suggestions: [{ type: 'action', confidence: 0.95, tool: 'read', arguments: { path: file } }] };
     const unchanged = await runPrefetch({ ...args, readPaths: new Set(), retainedReads });
     assert.equal(unchanged.prefetch.rounds.length, 0);
     assert.equal(unchanged.diagnostics.skipped[0].reason, 'retained-content-unchanged');
@@ -259,30 +379,34 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(compacted.prefetch.reads, 1);
     const largeCatalog = [...args.catalog, ...Array.from({ length: 150 }, (_, i) => ({ type: 'skill', name: `extra${i}`, path: path.join(cwd, `long-directory-${'x'.repeat(80)}-${i}`, 'SKILL.md') }))];
     for (const item of largeCatalog) readPaths.add(readPathKey(item.path, cwd));
-    value = { suggestions: [], actions: [] };
+    value = { suggestions: [] };
     await runPrefetch({ ...args, catalog: largeCatalog, readPaths });
     assert.match(observedInput, /List truncated: true/);
     assert.ok(observedInput.split('## Currently retained reads')[1].split('## Current task')[0].length <= 6200);
     value = originalValue;
 
-    value = { suggestions: [{ id: 'skill:test', confidence: 1 }, { id: 'mcp:mcp__pending', confidence: 0.8 },
-      { id: 'tool:notify', confidence: 0.7 }, { id: 'tool:subagent_start', confidence: 0.6 }], actions: value.actions };
+    value = { suggestions: [{ type: 'skill', name: 'test', confidence: 0.8 }, { type: 'mcp', name: 'mcp__pending', confidence: 0.8 },
+      { type: 'tool', name: 'notify', confidence: 0.7 }, { type: 'tool', name: 'subagent_start', confidence: 0.6 }, ...value.suggestions.filter(s => s.type === 'action')] };
     const hook = setup({ sdk: sdkFixture,
       tools: [{ name: 'mcp__ready__inspect', exposure: 'deferred', namespace: { name: 'mcp__ready', description: 'Ready service' } },
         { name: 'notify', exposure: 'deferred', description: 'Notify the user' },
         { name: 'subagent_start', exposure: 'codemode', description: 'Delegate a task' },
         { name: 'hidden_tool', exposure: 'hidden', description: 'Not available' }],
       sections: { mcp_servers: '- mcp__pending (tool_search): Pending service\n- mcp__undescribed (codemode)\n- mcp__ready (tool_search): Ready service' },
-      settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: 3 } } },
+      settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: 3, autoExpand: { enabled: true } } } },
       mcpWait: () => assert.fail('must not wait for MCP') });
     const accepted = await hook.handlers.before_agent_start({ prompt: 'prepare', systemPromptOptions: {
       skills: [{ name: 'test', description: 'Test', filePath: file }], sections: {} } }, ctx);
-    assert.equal(accepted, undefined);
-    const prepared = await hook.handlers.context({ messages: [] }, ctx);
+    assert.equal(accepted.message.customType, 'capability-preparation-boundary');
+    assert.equal(accepted.message.display, false);
+    const replacement = await hook.handlers.message_end({ message: { ...accepted.message, role: 'custom' } }, ctx);
+    assert.equal(replacement.message.customType, PREFETCH_TYPE);
+    assert.equal(hook.sent.length, 0, 'the boundary replacement must not also queue a duplicate carrier');
+    const prepared = await hook.handlers.context({ messages: [replacement.message] }, ctx);
     const output = { message: prepared.messages.find(m => m.customType === PREFETCH_TYPE) };
     assert.equal(output.message.customType, PREFETCH_TYPE);
-    assert.deepEqual(output.message.details.suggestions.map(s => s.type), ['skill', 'mcp', 'tool', 'tool']);
-    assert.equal(observedPayload.response_format.json_schema.schema.properties.suggestions.items.properties.id.enum, undefined);
+    assert.deepEqual(output.message.details.suggestions.map(s => s.type), ['skill', 'mcp', 'tool', 'tool', 'action', 'action']);
+    assert.ok(observedPayload.response_format.json_schema.schema.properties.suggestions.items.anyOf.every(branch => !branch.properties.id));
     const ids = observedInput;
     for (const id of ['skill:test', 'mcp:mcp__pending', 'mcp:mcp__ready', 'mcp:mcp__undescribed', 'tool:notify', 'tool:subagent_start']) assert.ok(ids.includes(id));
     assert.ok(!ids.includes('tool:hidden_tool'));
@@ -304,7 +428,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(hook.diagnostics.findLast(e => e.data.event === 'complete').data.requests, 1);
 
     expectedLimit = 0;
-    value = { suggestions: [{ id: 'skill:test', confidence: 1 }], actions: [] };
+    value = { suggestions: [{ type: 'skill', name: 'test', confidence: 1 }] };
     const zero = setup({ sdk: sdkFixture, settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: 0 } } },
       mcpWait: () => assert.fail('zero-action mode must not wait for MCP') });
     const zeroEvent = { prompt: 'recommend only', systemPromptOptions: { skills: [{ name: 'test', description: 'Test', filePath: file }], sections: {} } };
@@ -317,7 +441,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     assert.equal(zero.diagnostics.findLast(e => e.data.event === 'complete').data.requests, 1);
     expectedLimit = 3;
 
-    value = { suggestions: [], actions: [] }; predictions = 0;
+    value = { suggestions: [] }; predictions = 0;
     const empty = await runPrefetch({ ...args, query: '谢谢，先这样。' });
     assert.equal(predictions, 1); assert.equal(empty.prefetch.rounds.length, 0);
     assert.equal(empty.diagnostics.endReason, 'no-actions-needed');
@@ -331,7 +455,7 @@ test('real SDK: single prediction, checked read/bash, child persistence, metadat
     }
     expectedThinking = 'medium';
 
-    value = { suggestions: [], actions: [{ tool: 'bash', arguments: { command: 42 } }] };
+    value = { suggestions: [{ type: 'action', confidence: 0.95, tool: 'bash', arguments: { command: 42 } }] };
     const bad = await runPrefetch(args);
     assert.equal(bad.prefetch.failure, undefined); assert.equal(bad.prefetch.rounds.length, 0);
     assert.equal(bad.diagnostics.dropped[0].reason, 'invalid-action');
@@ -377,7 +501,7 @@ test('live IQ3 through the full discovery entry includes configured MCP metadata
       const hook = setup({ sdk: liveSdk, sections: { mcp_servers: section },
         tools: [{ name: 'notify', exposure: 'deferred', description: 'Send a notification to the user when work finishes' },
           { name: 'subagent_start', exposure: 'codemode', description: 'Start a subagent for independent review or delegated work' }],
-        settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: recommendationOnly ? 0 : 3 } } },
+        settings: { capabilityDiscovery: { recommendation: { enabled: true, actionPrediction: true, maxSuggestedActions: recommendationOnly ? 0 : 3, autoExpand: { enabled: !recommendationOnly } } } },
         mcpWait: () => assert.fail('metadata-only recommendation must not wait for MCP') });
       const append = hook.pi.appendEntry;
       hook.pi.appendEntry = (type, data) => { append(type, data); parent.appendCustomEntry(type, data); };
@@ -437,21 +561,20 @@ test('boundary budgets are configurable per option group', () => {
 });
 
 test('malformed predictions degrade per item; warnings never enter preparation output', () => {
-  assert.deepEqual(validatePrediction(null, [], []), { suggestions: [], actions: [], dropped: [{ kind: 'response', reason: 'not-an-object' }] });
-  const result = validatePrediction({ suggestions: [], actions: [], warnings: [] }, [], [],
+  assert.deepEqual(validatePrediction(null, [], []), { suggestions: [], dropped: [{ kind: 'response', reason: 'not-an-object' }] });
+  const result = validatePrediction({ suggestions: [], warnings: [] }, [], [],
     { actionPrediction: true });
-  assert.deepEqual(result, { suggestions: [], actions: [], dropped: [{ kind: 'field', reason: 'unknown-field', item: 'warnings' }] });
-  const missing = validatePrediction({ suggestions: [{ id: 'unknown', confidence: 1 }] }, [], [], { actionPrediction: true });
+  assert.deepEqual(result, { suggestions: [], dropped: [{ kind: 'field', reason: 'unknown-field', item: 'warnings' }] });
+  const missing = validatePrediction({ suggestions: [{ type: 'skill', name: 'unknown', confidence: 1 }] }, [], [], { actionPrediction: true });
   assert.deepEqual(missing.suggestions, []);
   assert.deepEqual(missing.dropped.filter(d => d.reason === 'invalid-capability').length, 1);
-  assert.deepEqual(missing.dropped.filter(d => d.reason === 'missing-field' && d.kind === 'action').length, 1);
-  const outside = validatePrediction({ suggestions: [], actions: [{ tool: 'read', arguments: { path: '/outside' } }] }, [], [], { actionPrediction: true });
-  assert.deepEqual(outside.actions, []);
-  assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { tool: 'read', arguments: { path: '/outside' } } }]);
-  const malformed = validatePrediction({ suggestions: 'all skills', actions: 42 }, [], [], { actionPrediction: true });
+  assert.equal(missing.dropped.length, 1);
+  const outside = validatePrediction({ suggestions: [{ type: 'action', confidence: 0.95, tool: 'read', arguments: { path: '/outside' } }] }, [], [], { actionPrediction: true });
+  assert.deepEqual(outside.suggestions, []);
+  assert.deepEqual(outside.dropped, [{ kind: 'action', reason: 'invalid-action', item: { type: 'action', confidence: 0.95, tool: 'read', arguments: { path: '/outside' } } }]);
+  const malformed = validatePrediction({ suggestions: 'all skills' }, [], [], { actionPrediction: true });
   assert.deepEqual(malformed.suggestions, []);
-  assert.deepEqual(malformed.actions, []);
-  assert.deepEqual(malformed.dropped.map(d => [d.kind, d.reason]).sort(), [['action', 'not-an-array'], ['suggestion', 'not-an-array']]);
+  assert.deepEqual(malformed.dropped.map(d => [d.kind, d.reason]).sort(), [['suggestion', 'not-an-array']]);
 });
 
 test('warning trigger settings are strict and independent', () => {

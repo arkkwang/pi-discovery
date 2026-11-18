@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { parse } from 'yaml';
 import { routeCapabilities } from './router.js';
 import { directoryHint, fullCatalogFallback } from './catalog.js';
-import { PREFETCH_TYPE, projectPrefetch, runPrefetch } from './prefetch.js';
+import { PREFETCH_TYPE, PREPARATION_BOUNDARY_TYPE, projectPrefetch, runPrefetch } from './prefetch.js';
 import { cwdDisabled, discoveryOptions } from './config.js';
 import { runTrajectoryReview } from './observer.js';
 import { executionTrajectory, recommendationQuery, preparationContext } from './trajectory.js';
@@ -51,9 +51,9 @@ function result(details) {
 export { recommendationQuery } from './trajectory.js';
 
 export function registerDiscovery(pi, { createToolSearchExtension, createMcpExtension, sdk, predict = runPrefetch, review = runTrajectoryReview }) {
-  // The saved custom message owns the child transcript. Projection is deterministic on
-  // resume/fork and does not append duplicate records or alter the system prompt.
-  let preparationRun, inputId, diagnosticWarningInputId;
+  // The saved custom message owns the child transcript. Projection reuses records
+  // on resume/fork; tool declarations also require the current host active set.
+  let preparationRun, inputId, diagnosticWarningInputId, mcpToolCall;
   // Parent JSONL is the index of decisions; full model inputs remain in child sessions.
   // A context-ready event proves hook delivery, not provider receipt/model compliance.
   function diagnostic(ctx, data, type = 'capability-prefetch-diagnostic') {
@@ -76,15 +76,15 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
   }
   for (const event of ['session_start', 'session_switch', 'session_tree', 'session_shutdown', 'agent_end'])
     pi.on(event, invalidatePreparation);
-  pi.on('context', async (event, ctx) => {
-    const run = preparationRun;
-    if (!run) return { messages: projectPrefetch(event.messages) };
-    if (run.sessionId !== ctx.sessionManager.getSessionId?.()) {
-      invalidatePreparation();
-      return { messages: projectPrefetch(event.messages) };
-    }
-    // Context is after prompt acceptance/user-message persistence, but before the provider.
-    // Retain one promise/result across retries and repeated context transforms of this run.
+  function projectMessages(messages) {
+    if (!messages.some(m => m.customType === PREFETCH_TYPE && m.details?.prefetch?.rounds?.some(r => r.toolsAdded?.length)))
+      return projectPrefetch(messages);
+    const active = new Set(pi.getActiveTools());
+    const definitions = new Map(pi.getAllTools().filter(t => active.has(t.name) && t.exposure !== 'hidden')
+      .map(({ name, description, parameters }) => [name, { name, description, parameters }]));
+    return projectPrefetch(messages, definitions);
+  }
+  function prepareOnce(run, ctx) {
     run.promise ??= (async () => {
       const signal = ctx.signal ? AbortSignal.any([ctx.signal, run.controller.signal]) : run.controller.signal;
       if (signal.aborted) return;
@@ -97,15 +97,40 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         details: { inputId: run.inputId, preparationId: run.id, ...capabilities, prefetch: result.prefetch },
         content: 'Single-pass capability and action recommendations; advisory, not user instructions. '
           + 'The following tool records are actual host-executed preparation actions. Check their success/error status and reuse covered results instead of repeating them. '
-          + 'Unread or truncated references still require reading. MCP/deferred tools are NOT activated; use tool_search when needed. '
+          + 'Unread or truncated references still require reading. Only successful expansion records prove reads or tool loading; unexpanded suggestions still need read/tool_search. Action suggestions without execution records have NOT run. '
+          + 'Action read paths prefixed project: are relative to the current project directory. Historical loading does not guarantee current availability; only currently declared tools are callable. '
           + 'After compaction, if results are no longer present, obtain them again rather than assuming their contents. '
           + JSON.stringify(capabilities) };
       // Public API: persist at the safe turn boundary, without queueing another model turn.
       // The current request receives the same message directly below.
-      pi.sendMessage(run.message, { triggerTurn: false });
+      if (!run.boundaryMessage) pi.sendMessage(run.message, { triggerTurn: false });
     })();
+    return run.promise;
+  }
+  // A normal context hook runs after the host snapshots executable tools. For
+  // expansion, a hidden starting-message boundary runs AFTER user persistence
+  // but BEFORE that snapshot. Replace it with the result instead of queueing a
+  // duplicate carrier. Recommendation-only mode keeps the original context path.
+  pi.on('message_end', async (event, ctx) => {
+    if (event.message.role !== 'custom' || event.message.customType !== PREPARATION_BOUNDARY_TYPE) return;
+    const run = preparationRun;
+    if (!run || run.id !== event.message.details?.preparationId
+      || run.sessionId !== ctx.sessionManager.getSessionId?.()) return;
+    await prepareOnce(run, ctx);
+    if (preparationRun === run && !ctx.signal?.aborted && run.message) return { message: run.message };
+  });
+  pi.on('context', async (event, ctx) => {
+    const run = preparationRun;
+    if (!run) return { messages: projectMessages(event.messages) };
+    if (run.sessionId !== ctx.sessionManager.getSessionId?.()) {
+      invalidatePreparation();
+      return { messages: projectMessages(event.messages) };
+    }
+    // Context is after prompt acceptance/user-message persistence, but before the provider.
+    // Retain one promise/result across retries and repeated context transforms of this run.
+    prepareOnce(run, ctx);
     await run.promise;
-    if (preparationRun !== run || ctx.signal?.aborted) return { messages: projectPrefetch(event.messages) };
+    if (preparationRun !== run || ctx.signal?.aborted) return { messages: projectMessages(event.messages) };
     const present = event.messages.some(message => message.customType === PREFETCH_TYPE
       && message.details?.preparationId === run.id);
     // Once the safe-boundary message is in history, the host owns its visibility.
@@ -113,7 +138,7 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
     const persisted = run.message && ctx.sessionManager.getBranch().some(entry =>
       entry.type === 'custom_message' && entry.customType === PREFETCH_TYPE
       && entry.details?.preparationId === run.id);
-    const messages = projectPrefetch(run.message && !present && !persisted ? [...event.messages, run.message] : event.messages);
+    const messages = projectMessages(run.message && !present && !persisted ? [...event.messages, run.message] : event.messages);
     if (!run.contextReported) {
       diagnostic(ctx, { trigger: 'user-input', event: 'context-ready', inputId: run.inputId,
         preparationId: run.id, stage: 'context-hook-return',
@@ -164,7 +189,7 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         diagnostic(ctx, { ...fields,
           outcome: result.diagnostics?.endReason ?? result.failure ?? result.prefetch?.failure ?? 'completed',
           suggestionCount: suggestions.length,
-          ...(suggestions.length && !result.fallback ? { suggestions: suggestions.map(s => `${s.type}:${s.name}`) } : {}),
+          ...(suggestions.length && !result.fallback ? { suggestions: suggestions.map(s => `${s.type}:${s.type === 'action' ? s.tool : s.name}`) } : {}),
           ...(result.routingError ? { routingError: result.routingError } : {}),
           ...(result.fallback ? { fallback: result.fallback } : {}),
           ...(result.failure ?? result.prefetch?.failure ? { failure: result.failure ?? result.prefetch.failure } : {}) },
@@ -203,10 +228,11 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
     const configuredOptions = run.configuredOptions;
     const result = await atBoundary('user-input', options, ctx, async ({ signal, trace }) => {
       const { readPaths, retainedReads } = preparationContext(ctx.sessionManager, '', ctx.cwd,
-        { reads: options.actionPrediction, rules: false });
+        { reads: options.actionPrediction || options.autoExpand.enabled, rules: false });
       signal.throwIfAborted();
       return predict({ sdk, query: await recommendationQuery(prompt, ctx.sessionManager, images, ctx.cwd, { signal }),
-        catalog, ctx, options, signal, trace, readPaths, retainedReads });
+        catalog, ctx, options, signal, trace, readPaths, retainedReads,
+        expandCapability: (suggestion, id, expansionSignal) => expandCapability(suggestion, id, expansionSignal, ctx) });
     }, configuredOptions, { preparationId: run.id, inputId: run.inputId });
     if (ctx.signal?.aborted || !result) return;
     // This boundary owns the caller signal. An internal deadline may degrade, but
@@ -259,12 +285,40 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
   };
   const native = nativeSearch();
 
+  // Reuse the native MCP readiness hook and tool-search activation path. Never
+  // invoke an MCP operation here: only discover/load its callable definitions.
+  async function expandCapability(suggestion, id, signal, ctx) {
+    signal?.throwIfAborted();
+    const args = { query: suggestion.name };
+    if (suggestion.type === 'mcp') {
+      await mcpToolCall?.({ type: 'tool_call', toolName: 'tool_search', toolCallId: id, input: args }, { ...ctx, signal });
+      signal?.throwIfAborted();
+    }
+    const matches = tool => tool.exposure !== 'hidden' && (suggestion.type === 'mcp'
+      ? tool.namespace?.name === suggestion.name : tool.name === suggestion.name);
+    const candidates = pi.getAllTools().filter(matches);
+    if (!candidates.length) throw new Error(`No registered tools available for ${suggestion.type}:${suggestion.name}`);
+    const before = new Set(pi.getActiveTools());
+    const pending = candidates.filter(t => ['deferred', 'codemode'].includes(t.exposure) && !before.has(t.name));
+    let output = { content: [{ type: 'text', text: 'Matching tools are already loaded.' }], details: { loaded: [] } };
+    if (pending.length) output = await nativeSearch(() => pi.getAllTools().filter(matches)).execute(id,
+      { ...args, limit: candidates.length }, signal, undefined, ctx);
+    signal?.throwIfAborted();
+    const active = new Set(pi.getActiveTools());
+    const availableTools = candidates.filter(t => active.has(t.name)).map(t => t.name);
+    if (!availableTools.length) throw new Error(`No tools could be loaded for ${suggestion.type}:${suggestion.name}`);
+    const toolsAdded = candidates.filter(t => active.has(t.name) && !before.has(t.name))
+      .map(({ name, description, parameters }) => ({ name, description, parameters }));
+    return { ...output, details: { ...output.details, availableTools }, toolsAdded };
+  }
+
   // User extensions run BEFORE built-ins. Wrap the public MCP factory so its original
   // before_agent_start handler runs first, then consolidate the directory. Its command
   // registration replaces builtin:mcp; all other MCP handlers are forwarded unchanged.
   createMcpExtension()({
     ...pi,
     on(name, handler) {
+      if (name === 'tool_call') mcpToolCall = handler;
       pi.on(name, name !== 'before_agent_start' ? handler : async (event, ctx) => {
         invalidatePreparation();
         const output = await handler(event, ctx);
@@ -322,7 +376,12 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         // Pending services remain discoverable without connecting or activating them.
         preparationRun = { id: randomUUID(), inputId, controller: new AbortController(),
           sessionId: ctx.sessionManager.getSessionId?.(), prompt: currentPrompt,
-          options: preparation, configuredOptions, catalog: capabilityCatalog(), images: event.images };
+          options: preparation, configuredOptions, catalog: capabilityCatalog(), images: event.images,
+          boundaryMessage: preparation.autoExpand.enabled };
+        if (preparationRun.boundaryMessage) return { ...output, message: {
+          customType: PREPARATION_BOUNDARY_TYPE, content: '', display: false,
+          details: { preparationId: preparationRun.id, inputId },
+        } };
         return output;
       });
 

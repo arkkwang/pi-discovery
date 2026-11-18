@@ -5,7 +5,7 @@
 Pi 编码 Agent 的统一能力发现与轨迹审查扩展，以单个 Pi 扩展包提供三件事：
 
 - **统一能力发现**：覆盖宿主 `tool_search`，按自然语言或精确名称发现并加载 Skill、MCP 与延迟工具；
-- **自动准备**：接收用户输入后、首个主模型请求前，预测当前任务需要的能力与下一步动作；
+- **自动准备**：接收用户输入后、首个主模型请求前，预测当前任务需要的能力与准备动作，并可自动展开高置信度建议——读取 Skill 入口、加载工具定义、执行推荐的只读动作；
 - **周期轨迹审查**：每 N 步对照系统提示、Skill 原则与用户请求审查执行轨迹，产出极简二元组提醒。
 
 自动能力/动作预测与周期轨迹审查是**不同入口、不同提示模板、不同输出**，只复用无工具的模型请求适配层。
@@ -41,6 +41,7 @@ pi install .
       "model": "zai-coding-cn/glm-5.3-flash",
       "actionPrediction": true,
       "maxSuggestedActions": 3,
+      "autoExpand": { "enabled": true, "minConfidence": 0.9 },
       "thinkingLevel": "low",
       "timeoutMs": 60000,
       "disableForCwd": []
@@ -70,8 +71,10 @@ pi install .
 | toolSearch | `thinkingLevel` | `"medium"` | 语义路由的思考级别 |
 | recommendation | `enabled` | `false` | 输入时推荐开关；开启后默认推荐能力 |
 | recommendation | `model` | `"llama/iq3"` | 能力/动作预测使用的 `provider/model` |
-| recommendation | `actionPrediction` | `false` | 推荐开启时，是否附加预测并执行准备动作，布尔值 |
-| recommendation | `maxSuggestedActions` | `3` | 每次准备动作上限，整数 0–8；0 不执行动作 |
+| recommendation | `actionPrediction` | `false` | 推荐开启时是否在 `suggestions` 中附加动作项（`read`/`bash`）；是否执行由 `autoExpand` 决定，布尔值 |
+| recommendation | `maxSuggestedActions` | `3` | 每次准备推荐的动作项上限，整数 0–8；0 不推荐动作项 |
+| recommendation | `autoExpand.enabled` | `false` | 自动展开达到置信度阈值的建议：skill 读取 SKILL.md（不递归）、mcp/tool 经宿主加载定义、action 项执行其推荐的只读动作；布尔值 |
+| recommendation | `autoExpand.minConfidence` | `0.85` | 自动展开的置信度阈值，0–1 内的有限数；低于阈值只保留为建议 |
 | recommendation | `thinkingLevel` | `"medium"` | 自动能力/动作预测的思考级别 |
 | recommendation | `timeoutMs` | `60000` | 准备阶段的预算（毫秒），整数 1000–600000 |
 | recommendation | `disableForCwd` | `[]` | 会话 CWD 命中列表时跳过准备；路径字符串数组 |
@@ -87,20 +90,22 @@ pi install .
 - `disableForCwd` 列出不做本组模型工作的项目根路径：准备阶段在输入门禁记录 `disabled-by-cwd`，审查阶段在步数门禁记录 `disabled-by-cwd`。条目支持绝对路径、`~/` 开头路径或相对路径（相对 Pi 进程 CWD 解析）；`/` 与 `\` 通用，`.`/`..`、重复或末尾分隔符会归一化，Windows 下忽略大小写。匹配按目录本体精确相等——列出根目录不覆盖其子目录，各自主组独立判断。手动 `tool_search` 不受影响。
 - `toolSearch.enabled=false` 时，注册的入口直接委托宿主原生 `tool_search`（BM25 搜索，不调用路由模型），保留原生工具元数据、参数 schema 与结果；系统提示词保留原生 Skill/MCP 目录。配置在运行时读取：提示词随下一次用户输入更新，搜索随下一次调用更新。配置非法时保留原生提示词/搜索，并在输入门禁告警。
 - `recommendation.enabled=false` 只关闭输入时的能力/动作预测，不影响 `tool_search` 路由与周期审查；`trajectory.enabled=false` 同理只关审查。
+- `actionPrediction` 只决定是否推荐动作项；是否读取、加载、执行只由 `autoExpand` 决定。关闭 `actionPrediction` 不影响 skill/mcp/tool 的自动展开；关闭 `autoExpand` 则一律不读取、不加载、不执行。`autoExpand` 只接受 `enabled` 与 `minConfidence` 两个键。
 - 示例让三组使用同一模型以保留原配置意图；可以分别改成不同模型。
 - **旧格式不再接受，也不自动迁移。** 删除 `recommendation.capabilityPrediction`，用 `recommendation.enabled` 开启能力推荐；`actionPrediction` 只控制附加动作，不能单独开启推荐。 `recommendation.toolSearchThinkingLevel` 移入 `toolSearch.thinkingLevel`，路由模型改由 `toolSearch.model` 提供；更早的平铺格式：将 `provider` + `model` 合并为各组的 `model`，动作开关与动作上限移入 recommendation，`autoRecommendThinkingLevel` 拆为各组各自的 `thinkingLevel`，`trajectoryWarnings` 改为 `trajectory.enabled`，`trajectoryWarningEverySteps` 改为 `trajectory.everySteps`。旧键、错误层级、未知键或无效值会明确报错，不会静默忽略。
+- **推荐输出新契约。** 推荐模型现在只返回单个 JSON 对象，唯一字段是 `suggestions`：能力项 `{type: "skill"|"mcp"|"tool", name, confidence}`，`actionPrediction` 开启时另有动作项 `{type: "action", tool: "read"|"bash", arguments, confidence}`。顶层 `actions` 数组、旧的 `{id, confidence}` 项形态及任何 `reason` 字段都不再输出。`actionPrediction` 不再意味着执行：要让推荐的读取/Bash 像以前一样自动执行，设置 `recommendation.autoExpand.enabled = true`；注意自动展开还会经宿主加载高置信度的 MCP/工具定义，而不只执行动作。
 
 | 入口 | 调用与输入 | 输出 |
 | --- | --- | --- |
-| 接收用户输入后、首个主模型请求前 | 只调用 `runPrefetch`；能力目录、当前请求/近期背景；动作启用时另加项目索引、已保留读取和动作预算 | 始终包含 `suggestions`，仅动作开启时包含 `actions`；**绝无 warnings** |
+| 接收用户输入后、首个主模型请求前 | 只调用 `runPrefetch`；能力目录、当前请求/近期背景；`actionPrediction` 开启时另加项目索引、已保留读取和动作上限 | 单个 `suggestions` 数组——能力项始终包含，动作项仅在 `actionPrediction` 开启时出现；**绝无 warnings** |
 | 每 N 步 | 只调用 `runTrajectoryReview`；执行轨迹、仅 Skill 的名称/description/路径表、主 Agent 当前系统提示词、用户请求 | 极简二元组列表；无问题为 `[]` |
 | 手动 `tool_search` | 自然语言查询使用独立语义搜索；精确名称/列表无需模型 | 能力建议及实际加载结果 |
 
 - 一步是 SDK `turn_end`：一轮 Assistant 及其工具执行完毕；并行工具批次算一步。新用户输入重置计数。每到 N 步就审查，不先猜测有没有问题；不添加错误/风险预筛选。已取消的调用不派发。
 - `trajectory.everySteps` 为 0–1000 整数，0 关闭周期。`trajectory.enabled=false` 同样关闭审查，但不影响开头的能力/动作预测。
-- `recommendation.maxSuggestedActions` 为 0–8 整数。动作关闭或预算为 0 时不扫描项目树、不执行动作。
+- `recommendation.maxSuggestedActions` 为 0–8 整数，限制推荐的动作项数量。`actionPrediction` 关闭或上限为 0 时不扫描项目树、不推荐动作项。
 - 每次触发最多一次模型请求，在各阶段自己的 `timeoutMs` 预算（默认 60 秒）内完成；无自动重试/压缩。周期提醒进入下一次自然发生的主模型请求，不强制续跑、不中断成审批门禁。每个边界无论成功、无警告还是失败，都会在主会话日志留下一条汇总 outcome 记录，标明自身会话与子会话；子会话的 outcome 条目也回携父会话 ID，两边任一 JSONL 都能看到双向关联。
-- 推荐不是执行授权，结构校验也不能保证模型语义准确。
+- 建议不是通用执行授权；自动展开只按既定只读准备策略执行达到阈值的项（见「自动准备、自动展开与读取复用」），结构校验也不能保证模型语义准确。
 
 ## 周期审查：帮助做好、做完、做对
 
@@ -119,20 +124,31 @@ pi install .
 ## 模板、Schema 与宿主校验
 
 - `prompts.js` 分别提供准备与审查模板。System 只写固定职责和格式指导；目录、路径、预算、主 Agent 系统/用户内容和输出 Schema 放 User 中，不把动态材料升为审查模型的系统权限。
-- 准备 Schema 随启用字段选择形状，但不随目录、路径或预算增长；`suggestions.id` 和 `read.path` 是 string。手动搜索也移除目录 ID enum。审查 Schema 固定为数组套二字符串数组。
-- 请求携带 `response_format.type=json_schema, strict=true`；宿主仍逐项验证当次能力 ID、实际候选 path、动作上限和参数约束。未知 ID/path、额外 warnings 字段或错误二元组会拒绝；不靠宽松解析修复模型返回，不自动重试。
+- 准备 Schema 是单个 `suggestions` 数组，项为能力对象（`type`/`name`/`confidence`）或 `actionPrediction` 开启时的动作对象（`type: "action"`/`tool`/`arguments`/`confidence`）；不随目录、路径或预算增长，`read.path`/`bash.command` 是 string。手动搜索暂保持自身路由返回形态，并移除目录 ID enum。审查 Schema 固定为数组套二字符串数组。
+- 请求携带 `response_format.type=json_schema, strict=true`；宿主逐项验证当次 Schema、当次能力 `type`/`name` 是否在目录中、动作参数 path 是否为实际候选、动作项数量是否在上限内及参数约束。未知 name/path、额外 warnings 字段或错误二元组会拒绝；不靠宽松解析修复模型返回，不自动重试。
 - 一些兼容服务不严格执行 Schema。实际 Flash 曾把非空二元组输出为非法的 `[{"字符串","字符串"}]`；模板现在明确给出完整 `[["提醒","来源及原文"]]` 示例，外层仍严格拒绝错误格式。
 
-## 自动准备与读取复用
+## 自动准备、自动展开与读取复用
 
-隔离 SDK session 不加载用户扩展、MCP、项目指令或工具。模型仅选择建议，宿主随后执行允许的 `read`/Bash；结果不再送回预测模型。准备功能不进行轨迹审查。
+隔离 SDK session 不加载用户扩展、MCP、项目指令或工具。模型只返回单个 JSON 对象，唯一字段是 `suggestions`——能力项 `{type: "skill"|"mcp"|"tool", name, confidence}`，`actionPrediction` 开启时另有动作项 `{type: "action", tool: "read"|"bash", arguments, confidence}`；对象没有顶层 `actions` 数组，也没有 `id`/`reason` 字段。宿主逐项校验并自动展开符合条件者，结果不送回预测模型。准备功能不进行轨迹审查。
 
-- 能力目录含 Skill、MCP（包括宿主声明的待就绪服务）与 deferred/codemode 工具，hidden 工具不进入；不等待 MCP 就绪、不自动激活。主模型按需用 `tool_search` 加载。
-- 开启能力预测时，请求/初始化失败、内部超时、非法响应或全部能力项无效，会把无相关性排序的全量目录及 `fallback: "full-catalog"`、`routingError` 送入主模型上下文并保存在预取消息中。不重试/换模型，不因回退追加读取或执行动作；已有合法行动及其结果仍保留。合法空建议不算失败，部分能力项有效则保留有效项并记录丢弃原因，单独行动失败不触发能力回退。能力预测关闭、用户取消或会话切换不注入回退目录。
-- Skill 的名称、完整 description、SKILL.md 路径放在同一条目；最多自动读入口，内部参考资料由主 Agent 选择。
+### 自动展开（`recommendation.autoExpand`）
+
+`autoExpand.enabled` 默认 `false`：不读取、不加载、不执行，所有建议照旧交给主模型。开启后，仅 `confidence >= minConfidence`（0–1 内的有限数，默认 0.85）的项就地展开：
+
+- **skill**——读取其 SKILL.md 入口文件，不递归；内部参考资料仍由主 Agent 选择；
+- **mcp**——经宿主加载该服务的工具定义；
+- **tool**——加载该延迟工具的定义；
+- **action**——执行其推荐的只读 `read`/Bash 动作。
+
+低于阈值的项只保留为建议，绝不执行。关闭 `actionPrediction` 只是去掉动作项，不影响 skill/mcp/tool 的展开；关闭 `autoExpand` 则无论置信度高低一律不读取、不加载、不执行。展开会复用既有内容：已保留的读取不重复（见下方去重规则），已激活的工具与 MCP 服务不重复加载。
+
+- 能力目录含 Skill、MCP（包括宿主声明的待就绪服务）与 deferred/codemode 工具，hidden 工具不进入；构建目录从不等待 MCP 就绪——只有高分 mcp 建议实际展开时，才经宿主 readiness 路径连接该服务。未开启自动展开时不激活任何能力，主模型按需用 `tool_search` 加载。
+- 开启能力预测时，请求/初始化失败、内部超时、非法响应或响应中没有任何合法建议项，会把无相关性排序的全量目录及 `fallback: "full-catalog"`、`routingError` 送入主模型上下文并保存在预取消息中。不重试/换模型；回退项 confidence 为 null、绝不自动展开，回退本身不追加读取、加载或执行，已执行的展开及其结果仍保留。合法空建议不算失败；部分非法的响应保留合法项并记录丢弃原因。合法动作项同样计入合法建议：能力项全非法而动作项合法时保留动作、不回退全量目录，仅动作项非法也绝不触发能力回退。能力预测关闭、用户取消或会话切换不注入回退目录。
+- Skill 的名称、完整 description、SKILL.md 路径放在同一条目；最多只自动读入口文件——且仅在自动展开开启且置信度达标时——内部参考资料由主 Agent 选择。
 - 项目索引广度优先，最多 3 层/200 条/6000 字符/2000 访问条目、100 ms；尊重局部 `.gitignore`，跳过隐藏目录、依赖/构建目录和凭据名，不跟随目录符号链接。遗漏不证明不存在。
 - 项目文件使用 `project:<relative-path>`，Skill 使用目录内真实路径。读取前复查候选路径、真实目录范围、文本类型与大小：单文件 50,000 字节、总量 100,000 字节。
-- Bash 为模型生成的非空命令，最多 2000 字符、无 NUL，原生工具超时 2 秒。提示优先只读，但**这不是程序强制只读沙箱**；不保证任意命令无副作用。
+- Bash 为模型生成的非空命令，最多 2000 字符、无 NUL，原生工具超时 2 秒。提示要求只生成只读的信息采集命令，但**这不是程序强制只读沙箱**；不保证任意命令无副作用。自动展开开启时，达到阈值的项按这一既定只读准备策略自动执行，无需逐项确认。
 - 读取去重使用当前有效上下文投影，不能拿历史轨迹当作正文仍在的证据。完整成功且未被上下文编辑/潜在修改失效的读取才直接覆盖；部分读取、失败、压缩移除不覆盖。Bash/不透明工具保守使新鲜度失效；若选中文件还有完整留存正文，则只核对该文件，内容相同才跳过再次读取。符号链接别名不合并。
 
 ## 执行轨迹与事件
@@ -147,7 +163,8 @@ pi install .
 
 - 准备与审查各建文件持久化子 session，保存实际输入和原始模型输出；失败也留证据。准备 session 标明 host 执行来源并保存真实工具结果。主会话诊断条目记录子 session 绝对路径、请求数、耗时及失败状态，不进入主模型上下文。
 - 子 session 使用 SDK 默认 `sessions` 存储，cwd 固定为 `path.join(os.tmpdir(), 'pi-discovery')`，正常出现在 Pi 会话列表，不设置自定义 sessionDir、不隐藏。预测模型与资源加载器沿用该 cwd；项目索引、准备动作仍使用主任务 cwd。文件名保持 SDK 默认 `timestamp_ID.jsonl`；session 名为 `pi-discovery · preparation|trajectory · provider/model · 完整sessionID`，origin 保留父 session ID/文件/叶子 ID。可直接 `pi-snap <ID前缀>` 查阅。
-- 输入准备由 `context` 钩子执行：`before_agent_start` 只整合目录、保存本轮请求，不等待推荐模型。宿主先确认接收并保存用户消息，然后在主模型请求前等待推荐。当前请求直接使用结果；`sendMessage(..., {triggerTurn:false})` 在安全轮次边界将同一结果保存为 `capability-prefetch`，不触发额外模型轮次。后续上下文投影只展开工具记录，不重演执行。
+- 输入准备有两条交付路径。`autoExpand` 关闭时走 `context` 钩子：`before_agent_start` 只整合目录、保存本轮请求，不等待推荐模型；宿主先确认接收并保存用户消息，然后在主模型请求前等待推荐；当前请求直接使用结果，`sendMessage(..., {triggerTurn:false})` 在安全轮次边界将同一结果保存为 `capability-prefetch`，不触发额外模型轮次。`autoExpand` 开启时，`before_agent_start` 另插入隐藏的 `capability-preparation-boundary` 消息；用户消息保存后，该边界的 `message_end` 执行一次准备并把边界替换为 `capability-prefetch` 载体——发生在宿主可执行工具快照之前——使新加载的定义在首个请求即可调用。`projectPrefetch` 从各轮 `toolsAdded` 投影这些工具 schema，之后的执行与后续声明由宿主活跃集合接管。后续上下文投影只展开工具记录，不重演执行；隐藏边界不会进入模型上下文。
+- 工具声明只投影宿主当前仍激活的工具，并使用当前定义。恢复或切分支不会仅凭历史预取记录重新激活工具；若尚无原生声明落盘，历史加载证据仍保留，但需由新一轮推荐或 tool_search 重新加载。
 - 同一轮共用一个准备 Promise；重复上下文变换、请求重试和后续工具轮次不重复推荐/保存。取消、切会话、切分支、结束运行使待处理结果失效；已落盘载体被压缩或 context edit 移除后，不从内存缓存复活。周期二元组仍在 `capability-trajectory-warning` 中落盘。
 - `index.js` 使用运行中 Pi 的公开 MCP/tool-search 工厂，不安装第二份 SDK。保留原 tool_search schema 对象身份、model-only/defaultActive、MCP 连接/OAuth/权限和 BM25/激活逻辑。
 - 包装 MCP 的 `before_agent_start`，原目录生成后合并成唯一能力目录。Skill 的 `metadata.catalog-description` 只用于主模型短目录；语义预测/审查仍用宿主完整 description。每次输入读取已解析 Skill 文件元数据，不扫描目录。
@@ -163,7 +180,7 @@ pi install .
 | `gate` | 每轮结束为何审查或跳过：`due` / `below-interval` / `disabled` / `zero-interval` / `cancelled` / `invalid-settings`，以及当前 `steps`、`interval` |
 | `start` | 两组总配置 `configuredOptions` 与当前阶段 `effectiveOptions`；预取只带 recommendation，周期审查只带 trajectory，不再混用另一阶段字段 |
 | `session` / `review-input` | 子会话路径及审查输入来源、字符数和轨迹截断情况；完整实际输入与原始模型输出在子 JSONL |
-| `complete` / `failure` | 请求、动作、耗时、失败；审查明确区分 `warnings`、`no-warnings` 和 `failed` |
+| `complete` / `failure` | 请求、自动展开与已执行动作、耗时、失败；审查明确区分 `warnings`、`no-warnings` 和 `failed` |
 | `context-ready` | 首次上下文钩子交出预取结果：`direct` 直接注入、`history` 已在上下文、`removed-from-context` 不复活已移除内容、`no-message` 无预取载体；含投影工具调用 ID |
 
 用 `pi-snap SESSION --only customType:capability-prefetch-diagnostic` 定位诊断记录，再用 `pi-snap SESSION ENTRY --json` 看字段；ENTRY 可用输出序号或原始 ID。`discoverySessionFile` / `discoverySessionId` 指向完整推理证据。实际执行参数/结果保存在 `capability-prefetch.details.prefetch.rounds[].messages`，其数字毫秒时间是动作时间，父记录时间可能是延后落盘时间。不要用父记录的排列位置判断预取是否晚于主执行。
@@ -184,7 +201,7 @@ pi install .
 {"query":"*"}
 ```
 
-自然语言按完整 description 语义推荐，再在选中范围内调用原生搜索；精确名称忽略大小写，`skill:`/`mcp:`/`tool:` 消歧。`*` 只列完整目录，不推理/加载。保留原工具参数，limit 缺省 8，无 offset；limit 仅截断正常推荐/精确匹配，`*` 与失败回退不受其截断（传入值仍须为正整数）。返回 `mode/total/suggestions/loaded/availableTools`；已加载工具不重复激活，Skill 需读正文。confidence 是未校准的模型自评相关度，不是执行门槛。
+自然语言按完整 description 语义推荐，再在选中范围内调用原生搜索；精确名称忽略大小写，`skill:`/`mcp:`/`tool:` 消歧。`*` 只列完整目录，不推理/加载。保留原工具参数，limit 缺省 8，无 offset；limit 仅截断正常推荐/精确匹配，`*` 与失败回退不受其截断（传入值仍须为正整数）。返回 `mode/total/suggestions/loaded/availableTools`；已加载工具不重复激活，Skill 需读正文。confidence 是未校准的模型自评相关度；手动搜索不会凭它执行任何操作——输入时的自动展开是另一个可配置开关（见「自动准备、自动展开与读取复用」）。该路由自身的返回形态暂不改变，单 `suggestions` 数组契约只应用于输入时推荐。
 
 路由请求失败（如 HTTP 429、网络错误、内部超时、模型/鉴权不可用）或返回非法结果时，直接降级为无相关性排序的全量目录，保留 Skill 正文路径，所有 confidence 为 null，并返回 `fallback: "full-catalog"` 和 `routingError`。mode 仍为 semantic，目录可用，不将整个结果标为 isError。回退不调用原生搜索、不加载工具、不换模型重试；需要工具时再用精确名称加载。合法 `suggestions: []` 是无匹配，不算失败，仍可按原逻辑尝试原生搜索。手动路由维持严格逐项验证，任一非法项使本次路由失败；预取则保留部分有效项。列出能力不代表已加载，也不授予执行权限；调用方取消直接取消，不转为降级成功。
 
@@ -206,7 +223,7 @@ PI_DISCOVERY_SDK_ROOT=<Pi包目录> PI_DISCOVERY_OBSERVER_LIVE=1 node --test tes
 ### 已知边界
 
 - 周期提醒质量、误报率及稳定延迟依赖具体模型；结构校验保证格式，不保证语义正确。
-- 准备动作中的 Bash 不是程序强制只读沙箱，见「自动准备与读取复用」。
+- 自动展开动作中的 Bash 不是程序强制只读沙箱，见「自动准备、自动展开与读取复用」。
 - MCP 连接与 Pi 会话初始化的等待不计入本扩展预算之外的承诺；长会话下的实际整链延迟需在真实使用中确认。
 
 ## License

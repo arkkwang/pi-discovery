@@ -63,8 +63,13 @@ export function recommendationOptions(value = {}) {
   const result = checkedOptions(value, {
     enabled: false, model: 'llama/iq3', actionPrediction: false,
     maxSuggestedActions: 3, thinkingLevel: 'medium', timeoutMs: 60_000,
-    disableForCwd: [],
+    disableForCwd: [], autoExpand: {},
   }, key);
+  result.autoExpand = checkedOptions(result.autoExpand, { enabled: false, minConfidence: 0.85 }, `${key}.autoExpand`);
+  if (typeof result.autoExpand.enabled !== 'boolean') throw new Error(`${key}.autoExpand.enabled must be boolean`);
+  if (!Number.isFinite(result.autoExpand.minConfidence) || result.autoExpand.minConfidence < 0 || result.autoExpand.minConfidence > 1) {
+    throw new Error(`${key}.autoExpand.minConfidence must be a number 0–1`);
+  }
   parseModel(result.model, `${key}.model`);
   if (typeof result.enabled !== 'boolean') throw new Error(`${key}.enabled must be boolean`);
   if (typeof result.actionPrediction !== 'boolean') throw new Error(`${key}.actionPrediction must be boolean`);

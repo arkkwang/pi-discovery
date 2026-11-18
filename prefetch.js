@@ -1,6 +1,6 @@
 import { createInternalSession, requestModel } from './model-request.js';
 import { fullCatalogFallback } from './catalog.js';
-import { buildPredictionPrompts, predictionSchema, predictionFields } from './prompts.js';
+import { buildPredictionPrompts, predictionSchema } from './prompts.js';
 import path from 'node:path';
 import { readPathKey } from './trajectory.js';
 import { parseModel, recommendationOptions } from './config.js';
@@ -9,15 +9,31 @@ import { randomUUID } from 'node:crypto';
 import { inside, projectIndex, secretName, skillFileIndex } from './context-index.js';
 
 export const PREFETCH_TYPE = 'capability-prefetch';
+export const PREPARATION_BOUNDARY_TYPE = 'capability-preparation-boundary';
 // Persist actual execution records, project standard tool messages, never replay tools.
-export function projectPrefetch(messages) {
+export function projectPrefetch(messages, activeDefinitions) {
   const present = new Set(messages.filter(m => m.role === 'toolResult').map(m => m.toolCallId));
+  const declared = new Set(messages.filter(m => m.role === 'system').flatMap(m => (m.toolsAdded ?? []).map(t => t.name)));
   return messages.flatMap(message => {
+    if (message.role === 'custom' && message.customType === PREPARATION_BOUNDARY_TYPE) return [];
     if (message.role !== 'custom' || message.customType !== PREFETCH_TYPE) return [message];
     const rounds = message.details?.prefetch?.rounds;
     if (!Array.isArray(rounds)) return [message];
-    return [message, ...rounds.filter(round => !round.messages.slice(1).every(m => present.has(m.toolCallId)))
-      .flatMap(round => round.messages)];
+    const projected = [message];
+    for (const round of rounds) {
+      if (!round.messages.slice(1).every(m => present.has(m.toolCallId))) projected.push(...round.messages);
+      // Starting-message expansion happens after the host's initial declaration
+      // snapshot. Supply schemas for this request, but never revive tools that
+      // the host no longer makes active (e.g. after a branch switch or restore).
+      const toolsAdded = (round.toolsAdded ?? [])
+        .map(t => activeDefinitions ? activeDefinitions.get(t.name) : t)
+        .filter(t => t && !declared.has(t.name));
+      if (toolsAdded.length) {
+        toolsAdded.forEach(t => declared.add(t.name));
+        projected.push({ role: 'system', content: '', toolsAdded, timestamp: message.timestamp });
+      }
+    }
+    return projected;
   });
 }
 // Malformed model output degrades per item: invalid entries are dropped
@@ -25,55 +41,47 @@ export function projectPrefetch(messages) {
 // Kept actions still pass the same allowlist checks that guarded execution before.
 export function validatePrediction(value, catalog, files, options = {}) {
   options = recommendationOptions(options);
-  const limit = options.actionPrediction ? options.maxSuggestedActions : 0;
-  const required = predictionFields(options);
-  const dropped = [];
-  const bounded = item => {
-    try { const text = JSON.stringify(item); return text.length <= 4000 ? item : `${text.slice(0, 4000)}…`; }
-    catch { return String(item); }
+  const dropped = [], suggestions = [], seen = new Map();
+  const drop = (kind, reason, item) => {
+    const text = item === undefined ? undefined : JSON.stringify(item);
+    dropped.push({ kind, reason, ...(item === undefined ? {} : { item: text.length <= 4000 ? item : `${text.slice(0, 4000)}…` }) });
   };
-  const drop = (kind, reason, item) => dropped.push(item === undefined ? { kind, reason } : { kind, reason, item: bounded(item) });
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    drop('response', 'not-an-object');
-    return { suggestions: [], actions: [], dropped };
+    drop('response', 'not-an-object'); return { suggestions, dropped };
   }
-  for (const key of Object.keys(value)) if (!required.includes(key)) drop('field', 'unknown-field', key);
-  const parseList = (field, kind) => {
-    if (!required.includes(field)) return [];
-    if (value[field] === undefined) { if (required.includes(field)) drop(kind, 'missing-field'); return []; }
-    if (!Array.isArray(value[field])) { drop(kind, 'not-an-array'); return []; }
-    return value[field];
-  };
+  for (const key of Object.keys(value)) if (key !== 'suggestions') drop('field', 'unknown-field', key);
+  if (!Array.isArray(value.suggestions)) {
+    drop('suggestion', value.suggestions === undefined ? 'missing-field' : 'not-an-array');
+    return { suggestions, dropped };
+  }
   const capabilities = new Map(catalog.map(c => [`${c.type}:${c.name}`, c]));
   const paths = new Set(files.map(f => f.key ?? f.path));
-  const suggestions = parseList('suggestions', 'suggestion').flatMap(item => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)
-      || Object.keys(item).some(k => !['id', 'confidence'].includes(k)) || !capabilities.has(item.id)
-      || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1) {
-      drop('suggestion', 'invalid-capability', item); return [];
+  let actionCount = 0;
+  for (const item of value.suggestions) {
+    const action = item?.type === 'action', kind = action ? 'action' : 'suggestion';
+    const keys = action ? ['type', 'tool', 'arguments', 'confidence'] : ['type', 'name', 'confidence'];
+    const valid = item && typeof item === 'object' && !Array.isArray(item)
+      && Object.keys(item).length === keys.length && Object.keys(item).every(k => keys.includes(k))
+      && Number.isFinite(item.confidence) && item.confidence >= 0 && item.confidence <= 1;
+    const args = item?.arguments;
+    if (!valid || (action ? !options.actionPrediction || !args || typeof args !== 'object' || Array.isArray(args)
+      || Object.keys(args).length !== 1
+      || !(item.tool === 'read' && paths.has(args.path) || item.tool === 'bash' && typeof args.command === 'string'
+        && args.command.trim().length > 0 && args.command.length <= 2000 && !args.command.includes('\0'))
+      : !['skill', 'mcp', 'tool'].includes(item.type) || typeof item.name !== 'string' || !capabilities.has(`${item.type}:${item.name}`))) {
+      drop(kind, action ? 'invalid-action' : 'invalid-capability', item); continue;
     }
-    return [{ ...capabilities.get(item.id), confidence: item.confidence }];
-  });
-  const kept = parseList('actions', 'action').filter(action => {
-    if (!action || typeof action !== 'object' || Array.isArray(action)
-      || Object.keys(action).some(k => !['tool', 'arguments'].includes(k)) || !action.arguments
-      || typeof action.arguments !== 'object' || Array.isArray(action.arguments) || Object.keys(action.arguments).length !== 1
-      || !(action.tool === 'read' && paths.has(action.arguments.path)
-        || action.tool === 'bash' && typeof action.arguments.command === 'string'
-          && action.arguments.command.trim().length > 0 && action.arguments.command.length <= 2000 && !action.arguments.command.includes('\0'))) {
-      drop('action', 'invalid-action', action); return false;
+    const key = action ? JSON.stringify([item.tool, args]) : `${item.type}:${item.name}`;
+    if (seen.has(key)) {
+      const previous = suggestions[seen.get(key)];
+      previous.confidence = Math.max(previous.confidence, item.confidence); continue;
     }
-    return true;
-  });
-  const seen = new Set(), actions = [];
-  for (const action of kept) {
-    const key = JSON.stringify(action);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (actions.length >= limit) { drop('action', 'over-budget', action); continue; }
-    actions.push(action);
+    if (action && actionCount >= options.maxSuggestedActions) { drop(kind, 'over-budget', item); continue; }
+    seen.set(key, suggestions.length);
+    suggestions.push(action ? { ...item } : { ...capabilities.get(key), confidence: item.confidence });
+    if (action) actionCount++;
   }
-  return { suggestions, actions, dropped };
+  return { suggestions, dropped };
 }
 // Bound the serialized field, including JSON escaping; never enumerate the read set
 // itself (it may contain paths outside the current allowed file index).
@@ -107,7 +115,7 @@ const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tot
 
 // Exactly one tool-free SDK model request. All execution is done by the checked host
 // adapter afterwards; results are NEVER fed back into another recommendation request.
-export async function runPrefetch({ sdk, query, catalog, ctx, options, signal, readPaths = new Set(), retainedReads = new Map(), trace = () => {} }) {
+export async function runPrefetch({ sdk, query, catalog, ctx, options, signal, readPaths = new Set(), retainedReads = new Map(), expandCapability, trace = () => {} }) {
   const start = performance.now();
   options = recommendationOptions(options);
   if (!options.enabled) return {
@@ -126,7 +134,7 @@ export async function runPrefetch({ sdk, query, catalog, ctx, options, signal, r
     parentLeafId: ctx.sessionManager?.getLeafId?.(), options,
   });
   trace('session', { discoverySessionId, discoverySessionFile });
-  let prediction = { suggestions: [], actions: [] }, failure, routingError, predictionCompleted = false;
+  let prediction = { suggestions: [] }, failure, routingError, predictionCompleted = false;
   let input = `## Current task and recent trajectory
 ${query}`;
   let requests = 0, inferenceMs = 0, bytes = 0, tree;
@@ -134,7 +142,7 @@ ${query}`;
   try {
     signal?.throwIfAborted();
     tree = options.actionPrediction && options.maxSuggestedActions ? await projectIndex(ctx.cwd, signal) : { entries: [], files: [], elapsedMs: 0, truncated: false };
-    const files = options.actionPrediction ? [...skillFileIndex(catalog.filter(c => c.type === 'skill')), ...tree.files] : [];
+    const files = [...skillFileIndex(catalog.filter(c => c.type === 'skill')), ...tree.files];
     signal?.throwIfAborted();
     const schema = predictionSchema(catalog, files, options);
     manager.appendCustomEntry('capability-recommendation-schema', { name: 'prediction', strict: true, schema });
@@ -150,8 +158,13 @@ ${query}`;
       routingError = 'Capability prediction returned invalid suggestions (no valid capabilities).';
     }
     if (prediction.dropped.length) trace('drop', { dropped: prediction.dropped });
-    manager.appendCustomEntry('capability-action-dispatch', { actor: 'host', actions: prediction.actions });
-    for (const action of prediction.actions) {
+    const expansions = options.autoExpand.enabled
+      ? prediction.suggestions.filter(s => s.confidence >= options.autoExpand.minConfidence) : [];
+    manager.appendCustomEntry('capability-action-dispatch', { actor: 'host', suggestions: expansions });
+    for (const suggestion of expansions) {
+      const action = suggestion.type === 'skill' ? { tool: 'read', arguments: { path: suggestion.path } }
+        : suggestion.type === 'action' ? suggestion
+          : { tool: 'tool_search', arguments: { query: suggestion.name } };
       signal?.throwIfAborted();
       if (action.tool === 'bash') readPaths.clear(); // Bash may mutate any previously read file.
       const actionStart = performance.now(), id = `prepare_${randomUUID().replaceAll('-', '')}`;
@@ -180,7 +193,8 @@ ${query}`;
           }
         } catch { /* Unverifiable evidence cannot suppress the normal checked read. */ }
       }
-      const args = action.tool === 'bash' ? { command: action.arguments.command, timeout: 2 } : { path: resolvedPath };
+      const args = action.tool === 'bash' ? { command: action.arguments.command, timeout: 2 }
+        : action.tool === 'read' ? { path: resolvedPath } : action.arguments;
       const call = { type: 'toolCall', id, name: action.tool, arguments: args };
       // Explicit host provenance above: these calls are dispatched from the prediction,
       // not falsely claimed to be native tool calls emitted by iq3.
@@ -195,13 +209,19 @@ ${query}`;
           bytes += size;
           result = await sdk.createReadToolDefinition(ctx.cwd).execute(id, args, signal);
           if (!result.isError && !result.details?.truncation?.truncated && !result.details?.truncation?.firstLineExceedsLimit) readPaths.add(readPathKey(resolvedPath, ctx.cwd));
-        } else result = await sdk.createBashToolDefinition(ctx.cwd).execute(id, args, signal);
+        } else if (action.tool === 'bash') result = await sdk.createBashToolDefinition(ctx.cwd).execute(id, args, signal);
+        else {
+          if (!expandCapability) throw new Error('Capability expansion adapter is unavailable');
+          result = await expandCapability(suggestion, id, signal);
+        }
       } catch (error) { result = { isError: true, content: [{ type: 'text', text: error.message }] }; }
       const toolResult = { role: 'toolResult', toolCallId: id, toolName: action.tool, content: result.content,
         details: result.details, isError: result.isError === true, timestamp: Date.now() };
       manager.appendMessage(toolResult);
-      rounds.push({ sourceCallIds: [id], messages: [assistant, toolResult] });
+      rounds.push({ sourceCallIds: [id], messages: [assistant, toolResult],
+        ...(result.toolsAdded?.length ? { toolsAdded: result.toolsAdded } : {}) });
       actionTimings.push({ tool: action.tool, durationMs: Math.round(performance.now() - actionStart), isError: toolResult.isError });
+      signal?.throwIfAborted();
     }
   } catch (error) {
     failure = signal?.aborted ? 'cancelled-or-timeout' : requests ? 'prediction-error' : 'setup-error';

@@ -44,8 +44,12 @@ export function toolCapabilities(tools) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function result(details) {
-  return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
+function result(details, isError = false) {
+  return { content: [{ type: 'text', text: JSON.stringify(details) }], details, ...(isError ? { isError } : {}) };
+}
+
+function missingMcpTools(name) {
+  return `No registered tools available for mcp:${name}. Check this server’s connection state and error details in /mcp in this Pi session.`;
 }
 
 export { recommendationQuery } from './trajectory.js';
@@ -297,7 +301,8 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
     const matches = tool => tool.exposure !== 'hidden' && (suggestion.type === 'mcp'
       ? tool.namespace?.name === suggestion.name : tool.name === suggestion.name);
     const candidates = pi.getAllTools().filter(matches);
-    if (!candidates.length) throw new Error(`No registered tools available for ${suggestion.type}:${suggestion.name}`);
+    if (!candidates.length) throw new Error(suggestion.type === 'mcp' ? missingMcpTools(suggestion.name)
+      : `No registered tools available for ${suggestion.type}:${suggestion.name}`);
     const before = new Set(pi.getActiveTools());
     const pending = candidates.filter(t => ['deferred', 'codemode'].includes(t.exposure) && !before.has(t.name));
     let output = { content: [{ type: 'text', text: 'Matching tools are already loaded.' }], details: { loaded: [] } };
@@ -437,14 +442,23 @@ export function registerDiscovery(pi, { createToolSearchExtension, createMcpExte
         }, signal, onUpdate, ctx);
         loaded = search.details?.loaded ?? [];
       }
+      signal?.throwIfAborted();
       const active = new Set(pi.getActiveTools());
-      const availableTools = pi.getAllTools().filter(t => active.has(t.name) && t.exposure !== 'hidden'
+      const visibleTools = pi.getAllTools().filter(t => t.exposure !== 'hidden');
+      const availableTools = visibleTools.filter(t => active.has(t.name)
         && (toolNames.has(t.name) || namespaces.has(t.namespace?.name))).map(t => t.name);
+      // A directory entry can outlive an unsuccessful host connection attempt.
+      // Check registration, not activation: limit may leave some registered tools inactive.
+      const mcpLoadErrors = directoryOnly ? [] : [...namespaces]
+        .filter(name => !visibleTools.some(t => t.namespace?.name === name))
+        .map(name => ({ name, message: missingMcpTools(name) }));
+      const onlyUnavailableMcpMatches = mcpLoadErrors.length > 0 && mcpLoadErrors.length === selected.length && !exactTool;
       return result({
         mode, total: suggestions.length, suggestions: selected, loaded, availableTools,
         ...(fallback ? { fallback: fallback.fallback, routingError: fallback.routingError } : {}),
+        ...(mcpLoadErrors.length ? { mcpLoadErrors } : {}),
         hint: directoryOnly ? directoryHint : 'Read Skill files before use. Loaded tools are callable from the next model call; availableTools includes already-active matches. Suggestions may omit useful capabilities; confidence is not calibrated. Discovery does not authorize execution.',
-      });
+      }, onlyUnavailableMcpMatches);
     },
   };
   // getSettings is unavailable during extension loading. Register one native-shaped

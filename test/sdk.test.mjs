@@ -80,7 +80,9 @@ test('real Pi loader/runner renders short catalog with default and custom SYSTEM
   }
 });
 
-test('real MCP factory waits for pending discovery, preserves schema identity and loads once', { skip: !sdkRoot, timeout: 15000 }, async () => {
+for (const failList of [false, true]) test(failList
+  ? 'real MCP factory reports failed tool registration; native search also finds no tools'
+  : 'real MCP factory waits for pending discovery, preserves schema identity and loads once', { skip: !sdkRoot, timeout: 15000 }, async () => {
   const sdk = suffix => import(pathToFileURL(path.join(sdkRoot, 'dist', suffix)).href);
   const { createMcpExtension } = await sdk('extensions/mcp/index.js');
   const { createToolSearchExtension } = await sdk('extensions/tool-search/index.js');
@@ -97,7 +99,9 @@ test('real MCP factory waits for pending discovery, preserves schema identity an
       protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' },
     } });
     if (message.method === 'tools/list') {
-      releaseList = () => server.send({ jsonrpc: '2.0', id: message.id, result: { tools: [
+      releaseList = () => server.send(failList
+        ? { jsonrpc: '2.0', id: message.id, error: { code: -32603, message: 'fixture tool-list failure' } }
+        : { jsonrpc: '2.0', id: message.id, result: { tools: [
         { name: 'inspect', description: 'Inspect test data', inputSchema: { type: 'object', properties: {} } },
         { name: 'secret', description: 'Hidden test data', inputSchema: { type: 'object', properties: {} } },
       ] } });
@@ -133,6 +137,29 @@ test('real MCP factory waits for pending discovery, preserves schema identity an
     await listRequested;
     assert.equal(ready, false, 'search must wait until tool registration completes');
     await releaseList(); await waiting;
+    if (failList) {
+      assert.ok(!tools.has('mcp__test__inspect'));
+      assert.match(JSON.stringify(notices), /fixture tool-list failure/);
+      const args = { query: 'mcp__test' };
+      let native;
+      createToolSearchExtension()({ ...pi, registerTool: value => { native = value; } });
+      assert.deepEqual((await native.execute('native', args)).details.loaded, []);
+      for (const query of [args.query, `mcp:${args.query}`]) {
+        const failed = await tool.execute('failed', { query });
+        assert.equal(failed.isError, true);
+        assert.deepEqual(failed.details.availableTools, []);
+        assert.deepEqual(failed.details.loaded, []);
+        assert.equal(failed.details.mcpLoadErrors[0].name, args.query);
+        assert.match(failed.content[0].text, /\/mcp/);
+        assert.doesNotMatch(failed.content[0].text, /fixture tool-list failure/, 'do not expose raw server errors');
+      }
+      const directory = await tool.execute('list', { query: '*' });
+      assert.notEqual(directory.isError, true);
+      assert.equal(directory.details.mcpLoadErrors, undefined);
+      assert.equal(directory.details.suggestions[0].name, args.query);
+      assert.equal(changes, 0);
+      return;
+    }
     assert.ok(tools.has('mcp__test__inspect'));
     const first = await tool.execute('one', { query: 'mcp__test' });
     assert.deepEqual(first.details.loaded, ['mcp__test__inspect']);

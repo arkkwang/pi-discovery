@@ -26,6 +26,8 @@ pi install .
 
 轨迹相关功能另需 pi-snap **≥0.5.0** 在 `PATH` 中（`npm install -g @arkkwang/pi-snap`），支持显式 `trace` 视图；旧 `--preset`／`--trace` 参数已移除。本扩展不会自行升级命令。CLI 缺失或失败时预测/审查显式失败，由外围 warning 与 diagnostic fail-open 保持主任务可继续。
 
+本包**替换**宿主内置的 `tool-search` 与 `mcp` 扩展：注册同名 `tool_search` 工具和 `/mcp` 命令后，Pi 会跳过这两个内置扩展（在扩展问题里提示一次）。`extensions` 保持默认即可，**不要**加 `-builtin:tool-search` 或 `-builtin:mcp`——未安装或未启用本包的机器会因此完全失去工具搜索和 MCP。覆盖 MCP 不只为了 `tool_search`：本包包装宿主 MCP 扩展，把服务目录（含连接中与连接失败的服务）合并进统一目录，并在准备阶段等待待连接服务。
+
 ## 配置
 
 ```json

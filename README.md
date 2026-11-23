@@ -26,6 +26,8 @@ pi install .
 
 Trajectory-related features additionally require pi-snap **≥0.5.0** on `PATH` (`npm install -g @arkkwang/pi-snap`), with the explicit `trace` view. The retired `--preset`/`--trace` flags are not accepted. This extension does not upgrade the command itself. When the CLI is missing or fails, prediction/review fails explicitly; the surrounding warning and diagnostic fail-open keep the main task continuing.
 
+The package **replaces** the host's built-in `tool-search` and `mcp` extensions: it registers the same `tool_search` tool and `/mcp` command, so Pi loads this package instead of the two built-ins (reported once under extension issues). Keep `extensions` at its default and do **not** add `-builtin:tool-search` or `-builtin:mcp`; a machine where this package is not installed or enabled would then lose tool search and MCP entirely. Overriding MCP is not only about `tool_search`: the package wraps the host MCP extension to merge its server directory (including connecting and failed servers) into the unified catalog and to wait for pending servers during preparation.
+
 ## Configuration
 
 ```json
